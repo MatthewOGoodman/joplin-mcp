@@ -1804,11 +1804,21 @@ async def update_note(
     title: Annotated[Optional[str], Field(description="New title (optional)")] = None,
     body: Annotated[Optional[str], Field(description="New content (optional)")] = None,
     is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo (optional)")] = None,
-    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed (optional)")] = None
+    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed (optional)")] = None,
+    parent_id: Annotated[Optional[str], Field(description="Move note to different notebook (notebook ID, optional)")] = None,
+    author: Annotated[Optional[str], Field(description="Note author (optional)")] = None,
+    source_url: Annotated[Optional[str], Field(description="Source URL for web clips (optional)")] = None,
+    latitude: Annotated[Optional[float], Field(description="GPS latitude coordinate (optional)")] = None,
+    longitude: Annotated[Optional[float], Field(description="GPS longitude coordinate (optional)")] = None,
+    altitude: Annotated[Optional[float], Field(description="GPS altitude coordinate (optional)")] = None,
+    markup_language: Annotated[Optional[int], Field(description="Note markup format: 1=Markdown, 2=HTML (optional)")] = None,
+    user_created_time: Annotated[Optional[int], Field(description="Custom creation timestamp in milliseconds (optional)")] = None,
+    user_updated_time: Annotated[Optional[int], Field(description="Custom update timestamp in milliseconds (optional)")] = None
 ) -> str:
     """Update an existing note in Joplin.
     
     Updates one or more properties of an existing note. At least one field must be provided.
+    Supports all REST API fields including moving notes between notebooks via parent_id.
     
     Returns:
         str: Success message confirming the note was updated.
@@ -1816,6 +1826,8 @@ async def update_note(
     Examples:
         - update_note("note123", title="New Title") - Update only the title
         - update_note("note123", body="New content", is_todo=True) - Update content and convert to todo
+        - update_note("note123", parent_id="notebook456") - Move note to different notebook
+        - update_note("note123", latitude=40.7128, longitude=-74.0060) - Add GPS coordinates
     """
     
     # Runtime validation for Jan AI compatibility while preserving functionality
@@ -1828,6 +1840,15 @@ async def update_note(
     if body is not None: update_data["body"] = body
     if is_todo is not None: update_data["is_todo"] = 1 if is_todo else 0
     if todo_completed is not None: update_data["todo_completed"] = 1 if todo_completed else 0
+    if parent_id is not None: update_data["parent_id"] = parent_id
+    if author is not None: update_data["author"] = author
+    if source_url is not None: update_data["source_url"] = source_url
+    if latitude is not None: update_data["latitude"] = latitude
+    if longitude is not None: update_data["longitude"] = longitude
+    if altitude is not None: update_data["altitude"] = altitude
+    if markup_language is not None: update_data["markup_language"] = markup_language
+    if user_created_time is not None: update_data["user_created_time"] = user_created_time
+    if user_updated_time is not None: update_data["user_updated_time"] = user_updated_time
     
     if not update_data:
         raise ValueError("At least one field must be provided for update")
@@ -1835,6 +1856,270 @@ async def update_note(
     client = get_joplin_client()
     client.modify_note(note_id, **update_data)
     return format_update_success(ItemType.note, note_id)
+
+@create_tool("bulk_move_notes", "Bulk move notes")
+async def bulk_move_notes(
+    note_ids: Annotated[List[str], Field(description="List of note IDs to move")],
+    target_notebook_id: Annotated[str, Field(description="Target notebook ID to move notes to")]
+) -> str:
+    """Move multiple notes to a target notebook in a single operation.
+    
+    Efficiently moves multiple notes between notebooks by updating their parent_id field.
+    This is useful for reorganizing notes or bulk operations.
+    
+    Returns:
+        str: Success message with details of the bulk move operation.
+    
+    Examples:
+        - bulk_move_notes(["note1", "note2", "note3"], "notebook456") - Move 3 notes to notebook456
+    """
+    
+    # Validate target notebook ID
+    target_notebook_id = validate_joplin_id(target_notebook_id)
+    
+    # Validate all note IDs
+    validated_note_ids = []
+    for note_id in note_ids:
+        validated_note_ids.append(validate_joplin_id(note_id))
+    
+    if not validated_note_ids:
+        raise ValueError("At least one note ID must be provided")
+    
+    client = get_joplin_client()
+    
+    # Verify target notebook exists
+    try:
+        client.get_folder(target_notebook_id, fields="id,title")
+    except Exception as e:
+        raise ValueError(f"Target notebook not found: {target_notebook_id}")
+    
+    # Perform bulk move operations
+    success_count = 0
+    failed_moves = []
+    
+    for note_id in validated_note_ids:
+        try:
+            client.modify_note(note_id, parent_id=target_notebook_id)
+            success_count += 1
+        except Exception as e:
+            failed_moves.append(f"Note {note_id}: {str(e)}")
+    
+    # Format response
+    result_lines = [
+        f"operation: bulk_move_notes",
+        f"status: {'partial_success' if failed_moves else 'success'}",
+        f"total_notes: {len(validated_note_ids)}",
+        f"moved_successfully: {success_count}",
+        f"target_notebook_id: {target_notebook_id}"
+    ]
+    
+    if failed_moves:
+        result_lines.append(f"failed_moves: {len(failed_moves)}")
+        result_lines.extend([f"  - {error}" for error in failed_moves])
+    
+    return "\n".join(result_lines)
+
+def extract_note_ids_from_result(formatted_result: str, limit: int) -> List[str]:
+    """Extract note IDs from formatted search results, limited to specified count.
+    
+    Parses the formatted output from find_notes() to extract note IDs.
+    Expected format contains lines like "  note_id: abc123def456..."
+    
+    Args:
+        formatted_result: Formatted string output from find_notes()
+        limit: Maximum number of note IDs to extract
+        
+    Returns:
+        List of note IDs (up to limit count)
+    """
+    import re
+    note_ids = []
+    
+    # Look for lines containing "note_id: " followed by the ID
+    pattern = r'^\s*note_id:\s*([a-f0-9]{32})'
+    
+    for line in formatted_result.split('\n'):
+        match = re.match(pattern, line)
+        if match and len(note_ids) < limit:
+            note_ids.append(match.group(1))
+    
+    return note_ids
+
+@create_tool("search_and_bulk_update_preview", "Search and bulk update preview")
+async def search_and_bulk_update_preview(
+    query: Annotated[str, Field(description="Search text or '*' for all notes")],
+    preview_limit: Annotated[int, Field(description="Number of notes to show in preview (default: 5)")] = 5,
+    inspect_count: Annotated[int, Field(description="Number of notes to show full content for (default: 2)")] = 2,
+    task: Annotated[OptionalBoolType, Field(description="Filter by task type (default: None)")] = None,
+    completed: Annotated[OptionalBoolType, Field(description="Filter by completion status (default: None)")] = None
+) -> str:
+    """Preview search results for bulk update operations.
+    
+    Shows three levels of information:
+    1. Total count of matching notes (from pagination header)
+    2. Preview of first N notes with metadata (titles, IDs, dates)
+    3. Full content inspection of first few notes for verification
+    
+    This function helps verify what notes would be affected before executing bulk updates.
+    
+    Returns:
+        str: Complete preview with count, metadata, and content samples
+        
+    Examples:
+        - search_and_bulk_update_preview("project") - Preview notes containing "project"
+        - search_and_bulk_update_preview("*", task=True, preview_limit=10) - Preview 10 todos
+    """
+    
+    # Get preview results using existing find_notes function
+    preview_result = await find_notes(query, limit=preview_limit, offset=0, task=task, completed=completed)
+    
+    # Extract note IDs from the formatted result for content inspection
+    note_ids = extract_note_ids_from_result(preview_result, inspect_count)
+    
+    # Get full content for specified notes
+    full_content_parts = []
+    if note_ids:
+        for note_id in note_ids:
+            try:
+                note_content = await get_note(note_id)
+                full_content_parts.append(f"--- NOTE {note_id} CONTENT ---\n{note_content}\n")
+            except Exception as e:
+                full_content_parts.append(f"--- NOTE {note_id} ERROR ---\nCould not retrieve: {str(e)}\n")
+    
+    # Combine preview with content inspection
+    result_parts = [preview_result]
+    
+    if full_content_parts:
+        result_parts.extend([
+            "\n=== FULL CONTENT INSPECTION ===",
+            f"Showing full content for first {len(note_ids)} notes for verification:\n"
+        ])
+        result_parts.extend(full_content_parts)
+    
+    return "\n".join(result_parts)
+
+@create_tool("search_and_bulk_update_execute", "Search and bulk update execute")
+async def search_and_bulk_update_execute(
+    query: Annotated[str, Field(description="Search text or '*' for all notes (must match preview)")],
+    expected_count: Annotated[int, Field(description="Expected number of notes from preview")],
+    first_title: Annotated[str, Field(description="Title of first note from preview")],
+    # All possible update parameters from update_note function
+    title: Annotated[Optional[str], Field(description="New title (optional)")] = None,
+    body: Annotated[Optional[str], Field(description="New content (optional)")] = None,
+    is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo (optional)")] = None,
+    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed (optional)")] = None,
+    parent_id: Annotated[Optional[str], Field(description="Move notes to different notebook (notebook ID, optional)")] = None,
+    author: Annotated[Optional[str], Field(description="Note author (optional)")] = None,
+    source_url: Annotated[Optional[str], Field(description="Source URL for web clips (optional)")] = None,
+    latitude: Annotated[Optional[float], Field(description="GPS latitude coordinate (optional)")] = None,
+    longitude: Annotated[Optional[float], Field(description="GPS longitude coordinate (optional)")] = None,
+    altitude: Annotated[Optional[float], Field(description="GPS altitude coordinate (optional)")] = None,
+    markup_language: Annotated[Optional[int], Field(description="Note markup format: 1=Markdown, 2=HTML (optional)")] = None,
+    user_created_time: Annotated[Optional[int], Field(description="Custom creation timestamp in milliseconds (optional)")] = None,
+    user_updated_time: Annotated[Optional[int], Field(description="Custom update timestamp in milliseconds (optional)")] = None,
+    task: Annotated[OptionalBoolType, Field(description="Filter by task type (must match preview)")] = None,
+    completed: Annotated[OptionalBoolType, Field(description="Filter by completion status (must match preview)")] = None
+) -> str:
+    """Execute bulk update operation on notes matching search criteria.
+    
+    Performs bulk updates on all notes matching the search query after safety verification.
+    The query and expected results must match what was shown in the preview.
+    
+    Returns:
+        str: Detailed results of the bulk update operation including success/failure counts
+        
+    Examples:
+        - search_and_bulk_update_execute("project", 15, "Project Meeting", parent_id="archive_id")
+        - search_and_bulk_update_execute("*", 200, "Daily Notes", is_todo=True, task=True)
+    """
+    
+    # Runtime validation for Jan AI compatibility
+    is_todo = flexible_bool_converter(is_todo)
+    todo_completed = flexible_bool_converter(todo_completed)
+    task = flexible_bool_converter(task)
+    completed = flexible_bool_converter(completed)
+    
+    # Build update data (same logic as update_note)
+    update_data = {}
+    if title is not None: update_data["title"] = title
+    if body is not None: update_data["body"] = body
+    if is_todo is not None: update_data["is_todo"] = 1 if is_todo else 0
+    if todo_completed is not None: update_data["todo_completed"] = 1 if todo_completed else 0
+    if parent_id is not None: update_data["parent_id"] = parent_id
+    if author is not None: update_data["author"] = author
+    if source_url is not None: update_data["source_url"] = source_url
+    if latitude is not None: update_data["latitude"] = latitude
+    if longitude is not None: update_data["longitude"] = longitude
+    if altitude is not None: update_data["altitude"] = altitude
+    if markup_language is not None: update_data["markup_language"] = markup_language
+    if user_created_time is not None: update_data["user_created_time"] = user_created_time
+    if user_updated_time is not None: update_data["user_updated_time"] = user_updated_time
+    
+    if not update_data:
+        raise ValueError("At least one update field must be provided")
+    
+    # Re-run search to get current results (bypass pagination to get all results)
+    client = get_joplin_client()
+    
+    # Handle special case for listing all notes with filters
+    if query.strip() == "*":
+        search_filters = build_search_filters(task, completed)
+        if search_filters:
+            search_query = " ".join(search_filters)
+            results = client.search_all(query=search_query, fields=COMMON_NOTE_FIELDS)
+            notes = process_search_results(results)
+        else:
+            results = client.get_all_notes(fields=COMMON_NOTE_FIELDS)
+            notes = process_search_results(results)
+    else:
+        # Regular text search with filters
+        search_filters = build_search_filters(task, completed)
+        if search_filters:
+            combined_query = f"{query} {' '.join(search_filters)}"
+            results = client.search_all(query=combined_query, fields=COMMON_NOTE_FIELDS)
+        else:
+            results = client.search_all(query=query, fields=COMMON_NOTE_FIELDS)
+        notes = process_search_results(results)
+    
+    # Safety verification
+    if len(notes) != expected_count:
+        raise ValueError(f"Search results have changed: expected {expected_count} notes, found {len(notes)}")
+    
+    if notes and getattr(notes[0], 'title', '') != first_title:
+        actual_first = getattr(notes[0], 'title', 'Unknown')
+        raise ValueError(f"First note has changed: expected '{first_title}', found '{actual_first}'")
+    
+    # Perform bulk updates
+    success_count = 0
+    failed_updates = []
+    
+    for note in notes:
+        note_id = getattr(note, 'id')
+        try:
+            client.modify_note(note_id, **update_data)
+            success_count += 1
+        except Exception as e:
+            failed_updates.append(f"Note {note_id} ({getattr(note, 'title', 'Unknown')}): {str(e)}")
+    
+    # Format response
+    update_summary = []
+    for key, value in update_data.items():
+        update_summary.append(f"{key}: {value}")
+    
+    result_lines = [
+        f"operation: search_and_bulk_update_execute",
+        f"status: {'partial_success' if failed_updates else 'success'}",
+        f"search_query: {query}",
+        f"total_notes: {len(notes)}",
+        f"updated_successfully: {success_count}",
+        f"update_fields: {', '.join(update_summary)}"
+    ]
+    
+    if failed_updates:
+        result_lines.append(f"failed_updates: {len(failed_updates)}")
+        result_lines.extend([f"  - {error}" for error in failed_updates])
+    
+    return "\n".join(result_lines)
 
 @create_tool("delete_note", "Delete note")
 async def delete_note(
