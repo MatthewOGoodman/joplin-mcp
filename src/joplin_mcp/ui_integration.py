@@ -203,11 +203,16 @@ def get_permission_settings() -> Dict[str, bool]:
     
     update_tools = [
         "update_note", "update_notebook", "update_tag", 
-        "tag_note", "untag_note", "add_tag_to_note", "remove_tag_from_note"
+        "tag_note", "untag_note", "move_note"
     ]
     
     delete_tools = [
-        "delete_note", "delete_notebook", "delete_tag"
+        "delete_note", "delete_notebook", "delete_tag", "strip_note_tags"
+    ]
+    
+    bulk_update_tools = [
+        "bulk_move_notes", "bulk_tag_notes", 
+        "search_and_bulk_update_preview", "search_and_bulk_update_execute"
     ]
     
     # Get user preferences
@@ -279,12 +284,36 @@ def get_permission_settings() -> Dict[str, bool]:
     for tool in delete_tools:
         permissions[tool] = delete_enabled
     
+    # 4. Bulk Update Permission
+    print()
+    print_colored("4. 🔄 BULK UPDATE OPERATIONS (Advanced batch operations)", Colors.MAGENTA + Colors.BOLD)
+    print_info("   Tools included:")
+    for tool in bulk_update_tools:
+        print_info(f"   • {tool}")
+    print()
+    print_warning("⚠️  These operations can affect multiple notes at once!")
+    
+    while True:
+        bulk_perm = input("Allow bulk operations on multiple notes? (y/n) [default: n]: ").lower().strip()
+        if bulk_perm in ('y', 'yes'):
+            bulk_enabled = True
+            break
+        elif bulk_perm in ('n', 'no', ''):
+            bulk_enabled = False
+            break
+        else:
+            print_warning("Please enter 'y' for yes or 'n' for no.")
+    
+    for tool in bulk_update_tools:
+        permissions[tool] = bulk_enabled
+    
     # Summary
     print()
     print_colored("📋 Permission Summary:", Colors.BOLD)
     print_info(f"• Write (create new): {'✅ Enabled' if write_enabled else '❌ Disabled'}")
     print_info(f"• Update (modify existing): {'✅ Enabled' if update_enabled else '❌ Disabled'}")
     print_info(f"• Delete (remove permanently): {'✅ Enabled' if delete_enabled else '❌ Disabled'}")
+    print_info(f"• Bulk operations (batch): {'✅ Enabled' if bulk_enabled else '❌ Disabled'}")
     
     return permissions
 
@@ -442,24 +471,24 @@ class ChatInterface(ABC):
             python_path = shutil.which("python") or shutil.which("python3") or sys.executable
             
             if is_development:
-            # Development install - use run_fastmcp_server.py
-            project_root = config_path.parent
-            server_script = project_root / "run_fastmcp_server.py"
+                # Development install - use run_fastmcp_server.py
+                project_root = config_path.parent
+                server_script = project_root / "run_fastmcp_server.py"
             
-            mcp_config = {
-                "command": python_path,
-                "args": [str(server_script)],
-                "cwd": str(project_root),
-                "env": {
-                    "PYTHONPATH": str(project_root)
+                mcp_config = {
+                    "command": python_path,
+                    "args": [str(server_script)],
+                    "cwd": str(project_root),
+                    "env": {
+                        "PYTHONPATH": str(project_root)
+                    }
                 }
-            }
-        else:
-            # Pip install - use module command
-            mcp_config = {
-                "command": "joplin-mcp-server",
-                "env": {}
-            }
+            else:
+                # Pip install - use module command
+                mcp_config = {
+                    "command": "joplin-mcp-server",
+                    "env": {}
+                }
             
         elif deployment_type == "docker":
             # Docker deployment
@@ -494,40 +523,61 @@ class ChatInterface(ABC):
         env_vars = self.get_joplin_environment_variables(config_path)
         mcp_config["env"].update(env_vars)
         
+        # Docker networking fix: Replace localhost with host.docker.internal on macOS/Windows
+        # This resolves the documented issue where Docker containers cannot reach host services
+        # via localhost on macOS/Windows due to Docker Desktop's VM architecture
+        import platform
+        if platform.system() in ["Darwin", "Windows"]:
+            if env_vars.get("JOPLIN_HOST") == "localhost":
+                mcp_config["env"]["JOPLIN_HOST"] = "host.docker.internal"
+            # Also update the convenience JOPLIN_URL if it contains localhost
+            if "JOPLIN_URL" in env_vars and "localhost" in env_vars["JOPLIN_URL"]:
+                mcp_config["env"]["JOPLIN_URL"] = env_vars["JOPLIN_URL"].replace("localhost", "host.docker.internal")
+        
         return mcp_config
     
     def get_joplin_environment_variables(self, config_path: Path) -> Dict[str, str]:
         """Extract Joplin environment variables from config file.
-        
-        Subclasses can override this to use different config reading methods.
+
+        Standardizes on JOPLIN_TOKEN, JOPLIN_HOST, JOPLIN_PORT, JOPLIN_VERIFY_SSL.
+        Also sets JOPLIN_URL for maximum compatibility where supported.
         """
         env_vars = {}
-        
+
         if not config_path.exists():
             return env_vars
-            
+
         try:
-            # Default implementation using JoplinMCPConfig
+            # Preferred path using typed config loader
             from .config import JoplinMCPConfig
-            joplin_config = JoplinMCPConfig.from_file(config_path)
-            
-            if joplin_config.token:
-                env_vars["JOPLIN_API_TOKEN"] = joplin_config.token
-            if joplin_config.base_url:
-                env_vars["JOPLIN_API_BASE_URL"] = joplin_config.base_url
-            if not joplin_config.verify_ssl:
+
+            cfg = JoplinMCPConfig.from_file(config_path)
+
+            if cfg.token:
+                env_vars["JOPLIN_TOKEN"] = cfg.token
+            # Provide both URL and discrete host/port for consumers
+            env_vars["JOPLIN_HOST"] = str(cfg.host)
+            env_vars["JOPLIN_PORT"] = str(cfg.port)
+            if not cfg.verify_ssl:
                 env_vars["JOPLIN_VERIFY_SSL"] = "false"
-                
+            # Optional convenience var used by some fallbacks
+            env_vars["JOPLIN_URL"] = cfg.base_url
+
         except Exception:
-            # Fallback to raw JSON reading for backward compatibility
+            # Fallback to raw JSON reading
             try:
-                with open(config_path, 'r') as f:
-                    raw_config = json.load(f)
-                
-                # Legacy field names for backward compatibility
-                if raw_config.get("token"):
-                    env_vars["JOPLIN_TOKEN"] = raw_config["token"]
-                if not raw_config.get("verify_ssl", True):
+                with open(config_path) as f:
+                    raw = json.load(f)
+                token = raw.get("token")
+                if token:
+                    env_vars["JOPLIN_TOKEN"] = token
+                host = raw.get("host")
+                port = raw.get("port")
+                if host is not None:
+                    env_vars["JOPLIN_HOST"] = str(host)
+                if port is not None:
+                    env_vars["JOPLIN_PORT"] = str(port)
+                if raw.get("verify_ssl") is False:
                     env_vars["JOPLIN_VERIFY_SSL"] = "false"
                     
             except (json.JSONDecodeError, FileNotFoundError):
