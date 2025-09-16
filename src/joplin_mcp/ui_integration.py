@@ -53,6 +53,111 @@ def print_warning(message: str) -> None:
     """Print a warning message."""
     print_colored(f"⚠️  {message}", Colors.YELLOW)
 
+def get_deployment_choice() -> str:
+    """Ask user to choose between Python package and Docker deployment."""
+    print_colored("\n🔧 Deployment Type", Colors.BLUE + Colors.BOLD)
+    print_colored("Choose your deployment infrastructure:", Colors.WHITE)
+    print_colored("  1. Python Package (recommended for most users)", Colors.WHITE)
+    print_colored("  2. Docker (for containerized environments)", Colors.WHITE)
+    
+    while True:
+        choice = input(f"\n{Colors.CYAN}Enter your choice (1 or 2): {Colors.END}").strip()
+        
+        if choice == "1":
+            print_success("Selected: Python Package deployment")
+            return "python"
+        elif choice == "2":
+            print_success("Selected: Docker deployment")
+            return "docker"
+        else:
+            print_error("Please enter 1 or 2")
+            continue
+
+def get_mode_choice() -> bool:
+    """Ask user to choose between development and production mode."""
+    print_colored("\n⚙️ Development Mode", Colors.BLUE + Colors.BOLD)
+    print_colored("Choose your initial mode:", Colors.WHITE)
+    print_colored("  1. Production (stable, recommended)", Colors.WHITE)
+    print_colored("  2. Development (live code changes, debugging)", Colors.WHITE)
+    
+    while True:
+        choice = input(f"\n{Colors.CYAN}Enter your choice (1 or 2): {Colors.END}").strip()
+        
+        if choice == "1":
+            print_success("Selected: Production mode")
+            return False  # is_development = False
+        elif choice == "2":
+            print_success("Selected: Development mode")
+            return True   # is_development = True
+        else:
+            print_error("Please enter 1 or 2")
+            continue
+
+def validate_docker_environment() -> None:
+    """Validate Docker is available and running, exit if not."""
+    import subprocess
+    
+    print_step("Validating Docker Environment")
+    
+    try:
+        # Check if docker command exists
+        subprocess.run(["docker", "--version"], check=True, capture_output=True)
+        print_success("Docker command found")
+        
+        # Check if Docker daemon is running
+        subprocess.run(["docker", "ps"], check=True, capture_output=True)
+        print_success("Docker daemon is running")
+        
+    except FileNotFoundError:
+        print_error("Docker not found. Please install Docker Desktop:")
+        print_colored("  • Visit: https://www.docker.com/products/docker-desktop/", Colors.WHITE)
+        print_colored("  • After installation, restart this script", Colors.WHITE)
+        sys.exit(1)
+        
+    except subprocess.CalledProcessError:
+        print_error("Docker daemon not running. Please start Docker Desktop:")
+        print_colored("  • Start Docker Desktop application", Colors.WHITE)
+        print_colored("  • Wait for it to fully start", Colors.WHITE)
+        print_colored("  • Then restart this script", Colors.WHITE)
+        sys.exit(1)
+
+def prepare_docker_deployment(config_path: Path) -> None:
+    """Build both development and production Docker images using modular build script."""
+    # Use the same logic as existing code - project root is config path parent
+    project_root = config_path.parent
+    
+    # Use the modular Docker build utility
+    try:
+        import sys
+        sys.path.append(str(project_root))
+        from docker_build import validate_docker_environment, build_docker_images
+        
+        # Validate Docker environment first
+        if not validate_docker_environment():
+            print_error("Docker environment validation failed")
+            sys.exit(1)
+        
+        # Build both dev and prod images
+        success = build_docker_images(
+            project_root=project_root,
+            image_name="joplin-mcp",
+            build_dev=True,
+            build_prod=True
+        )
+        
+        if success:
+            print_success("Docker deployment ready! You can switch between dev/prod modes anytime.")
+        else:
+            print_error("Docker build failed")
+            sys.exit(1)
+            
+    except ImportError:
+        print_error("Docker build utility not found. Please ensure docker_build.py is available.")
+        sys.exit(1)
+    except Exception as e:
+        print_error(f"Unexpected error during Docker build: {e}")
+        sys.exit(1)
+
 def print_info(message: str) -> None:
     """Print an info message."""
     print_colored(f"ℹ️  {message}", Colors.BLUE)
@@ -327,12 +432,16 @@ class ChatInterface(ABC):
     def create_base_mcp_config(
         self, 
         config_path: Path, 
-        is_development: bool = False
+        is_development: bool = False,
+        deployment_type: str = "python"
     ) -> Dict[str, Any]:
         """Create base MCP server configuration that works for most interfaces."""
-        python_path = shutil.which("python") or shutil.which("python3") or sys.executable
         
-        if is_development:
+        if deployment_type == "python":
+            # Python deployment (original logic)
+            python_path = shutil.which("python") or shutil.which("python3") or sys.executable
+            
+            if is_development:
             # Development install - use run_fastmcp_server.py
             project_root = config_path.parent
             server_script = project_root / "run_fastmcp_server.py"
@@ -351,6 +460,35 @@ class ChatInterface(ABC):
                 "command": "joplin-mcp-server",
                 "env": {}
             }
+            
+        elif deployment_type == "docker":
+            # Docker deployment
+            project_root = config_path.parent
+            if is_development:
+                # Docker development - volume mount source code
+                mcp_config = {
+                    "command": "docker",
+                    "args": [
+                        "run", "--rm", "-i", "--network", "host",
+                        "-v", f"{project_root}/src:/app/src",
+                        "-v", f"{config_path}:/app/joplin-mcp.json",
+                        "joplin-mcp:dev",
+                        "python", "run_fastmcp_server.py"
+                    ],
+                    "env": {}
+                }
+            else:
+                # Docker production - self-contained image
+                mcp_config = {
+                    "command": "docker", 
+                    "args": [
+                        "run", "--rm", "-i", "--network", "host",
+                        "-v", f"{config_path}:/app/joplin-mcp.json",
+                        "joplin-mcp:prod",
+                        "python", "-m", "joplin_mcp.server"
+                    ],
+                    "env": {}
+                }
         
         # Add Joplin-specific environment variables
         env_vars = self.get_joplin_environment_variables(config_path)
@@ -400,14 +538,15 @@ class ChatInterface(ABC):
     def create_mcp_config(
         self, 
         config_path: Path, 
-        is_development: bool = False
+        is_development: bool = False,
+        deployment_type: str = "python"
     ) -> Dict[str, Any]:
         """Create MCP server configuration for this interface.
         
         Default implementation works for most interfaces.
         Override if you need custom configuration structure.
         """
-        return self.create_base_mcp_config(config_path, is_development)
+        return self.create_base_mcp_config(config_path, is_development, deployment_type)
     
     @abstractmethod
     def get_manual_config_instructions(
@@ -588,7 +727,8 @@ def register_interface(name: str, interface_class: Type[ChatInterface]) -> None:
 def update_chat_interface_config(
     interface_name: str,
     config_path: Path,
-    is_development: bool = False
+    is_development: bool = False,
+    deployment_type: str = "python"
 ) -> bool:
     """Update a chat interface configuration with the MCP server.
     
@@ -635,7 +775,7 @@ def update_chat_interface_config(
             interface_config["mcpServers"] = {}
         
         # Add Joplin MCP server config
-        mcp_config = interface.create_mcp_config(config_path, is_development)
+        mcp_config = interface.create_mcp_config(config_path, is_development, deployment_type)
         
         # Jan AI requires an "active" field to enable the MCP server
         if interface_name == "jan":
@@ -803,6 +943,15 @@ def run_installation_process(
         # Step 2: Create/update Joplin configuration
         config_path = config_path_resolver(token)
         
+        # Step 2.5: Get deployment and mode choices
+        deployment_type = get_deployment_choice()
+        is_development = get_mode_choice()
+        
+        # Step 2.6: Prepare deployment infrastructure
+        if deployment_type == "docker":
+            validate_docker_environment()
+            prepare_docker_deployment(config_path)
+        
         # Step 3: Update AI interface configurations
         interface_results = {}
         for interface_name in interfaces:
@@ -810,7 +959,8 @@ def run_installation_process(
                 success = update_chat_interface_config(
                     interface_name=interface_name,
                     config_path=config_path,
-                    is_development=is_development
+                    is_development=is_development,
+                    deployment_type=deployment_type
                 )
                 interface_results[interface_name] = success
             except Exception as e:

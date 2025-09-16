@@ -204,10 +204,12 @@ class JoplinMCPConfig:
         "get_note": True,               # Get formatted note details
         "get_links": True,              # Extract links to other notes from a note
         
-        # Managing notes (3 tools)
+        # Managing notes (5 tools)
         "create_note": True,             # Create new note
         "update_note": True,             # Update existing note
         "delete_note": True,             # Delete note
+        "move_note": False,              # Move single note between notebooks (disabled by default)
+        "bulk_move_notes": False,        # Move multiple notes between notebooks (disabled by default)
         
         # Managing notebooks (4 tools)
         "list_notebooks": True,          # List all notebooks
@@ -215,16 +217,22 @@ class JoplinMCPConfig:
         "update_notebook": False,        # Update notebook (disabled by default)
         "delete_notebook": True,         # Delete notebook
         
-        # Managing tags (5 tools)
+        # Managing tags (6 tools)
         "list_tags": True,               # List all tags
         "create_tag": True,              # Create new tag
         "update_tag": False,             # Update tag (disabled by default)
         "delete_tag": True,              # Delete tag
         "get_tags_by_note": True,        # Get tags for a note
+        "strip_note_tags": False,        # Remove all tags from note (disabled by default)
         
-        # Tag-note relationships (2 tools)
+        # Tag-note relationships (3 tools)
         "tag_note": True,                # Add tag to note
         "untag_note": True,              # Remove tag from note
+        "bulk_tag_notes": False,         # Apply multiple tags to multiple notes (disabled by default)
+        
+        # Bulk operations (2 tools)
+        "search_and_bulk_update_preview": False,  # Preview bulk updates (disabled by default)
+        "search_and_bulk_update_execute": False,  # Execute bulk updates (disabled by default)
         
         # Utility operations (1 tool)
         "ping_joplin": True,             # Test connection
@@ -236,10 +244,10 @@ class JoplinMCPConfig:
     # Tool categories for easier management
     TOOL_CATEGORIES = {
         "finding": ["find_notes", "find_notes_with_tag", "find_notes_in_notebook", "get_all_notes", "get_note", "get_links"],
-        "notes": ["create_note", "update_note", "delete_note"],
+        "notes": ["create_note", "update_note", "delete_note", "move_note", "bulk_move_notes"],
         "notebooks": ["list_notebooks", "create_notebook", "update_notebook", "delete_notebook"],
-        "tags": ["list_tags", "create_tag", "update_tag", "delete_tag", "get_tags_by_note", "tag_note", "untag_note"],
-        "utilities": ["ping_joplin"],
+        "tags": ["list_tags", "create_tag", "update_tag", "delete_tag", "get_tags_by_note", "tag_note", "untag_note", "bulk_tag_notes", "strip_note_tags"],
+        "utilities": ["ping_joplin", "search_and_bulk_update_preview", "search_and_bulk_update_execute"],
     }
 
     # Content exposure levels for privacy control

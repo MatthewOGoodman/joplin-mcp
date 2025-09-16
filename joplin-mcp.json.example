@@ -24,7 +24,14 @@
     "delete_notebook": true,
     "delete_tag": true,
     "update_notebook": true,
-    "ping_joplin": true
+    "update_tag": true,
+    "ping_joplin": true,
+    "move_note": true,
+    "bulk_move_notes": true,
+    "bulk_tag_notes": true,
+    "strip_note_tags": true,
+    "search_and_bulk_update_preview": true,
+    "search_and_bulk_update_execute": true
   },
   "content_exposure": {
     "search_results": "preview",

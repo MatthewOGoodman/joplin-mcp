@@ -18,7 +18,7 @@ This proposal outlines a comprehensive enhancement plan for the Joplin MCP serve
 ## Current State Analysis
 
 ### Existing Strengths
-- **21 core tools** covering basic CRUD operations
+- **27 core tools** covering basic CRUD operations and bulk operations
 - **Robust search** with pagination and filtering
 - **Privacy controls** with configurable content exposure
 - **Smart content handling** (TOC for long notes, section extraction)

@@ -1,0 +1,58 @@
+# Docker Compose for joplin-mcp production deployment
+# Usage:
+#   1. Set JOPLIN_TOKEN in .env file or environment
+#   2. docker-compose up -d
+#   3. Configure Claude Desktop to connect to MCP on port 8080
+
+version: '3.8'
+
+services:
+  # Production joplin-mcp with bulk operations (our enhanced fork)
+  joplin-mcp-enhanced:
+    build:
+      context: .
+      target: production
+    container_name: joplin-mcp-enhanced
+    network_mode: "host"
+    environment:
+      - JOPLIN_TOKEN=${JOPLIN_TOKEN}
+      - MCP_PORT=8080
+      - JOPLIN_MCP_ENV=production
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Example: Another MCP on different port (for multi-MCP production)
+  # joplin-mcp-original:
+  #   image: alondmnt/joplin-mcp:latest
+  #   container_name: joplin-mcp-original
+  #   network_mode: "host"
+  #   environment:
+  #     - JOPLIN_TOKEN=${JOPLIN_TOKEN}
+  #     - MCP_PORT=8081
+  #   ports:
+  #     - "8081:8081"
+  #   restart: unless-stopped
+
+  # Development version (for reference - use direct docker for testing)
+  # joplin-mcp-dev:
+  #   build:
+  #     context: .
+  #     target: development
+  #   container_name: joplin-mcp-dev
+  #   network_mode: "host"
+  #   environment:
+  #     - JOPLIN_TOKEN=${JOPLIN_TOKEN}
+  #     - MCP_PORT=8082
+  #     - JOPLIN_MCP_ENV=development
+  #   volumes:
+  #     - ./src:/app/src
+  #   ports:
+  #     - "8082:8082"
+  #   restart: unless-stopped

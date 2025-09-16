@@ -22,6 +22,7 @@
 - list_tags() - List all available tags
 - tag_note(note_id, tag_name) - Add a tag to a note
 - untag_note(note_id, tag_name) - Remove a tag from a note
+- bulk_tag_notes(note_ids, tag_names) - Apply multiple tags to multiple notes
 - get_tags_by_note(note_id) - See what tags a note has
 
 📁 MANAGING NOTEBOOKS:
@@ -209,6 +210,44 @@ def build_search_filters(task: Optional[bool], completed: Optional[bool]) -> Lis
     
     return search_parts
 
+def build_general_search_filters(**params) -> List[str]:
+    """Build search filter parts from *_filter parameters using field registry.
+    
+    Uses alondmnt's build_search_filters() for todo fields, simple concatenation for others.
+    
+    Args:
+        **params: All function parameters (will extract *_filter fields automatically)
+        
+    Returns:
+        List of search filter strings
+    """
+    # Apply field converters first for proper type handling (includes lowercase conversion)
+    converted_params = apply_field_converters(**params)
+    
+    # Get fields that have filter values
+    field_pars = generate_field_pars(**converted_params)
+    filter_fields = field_pars['filter_fields']
+    
+    search_parts = []
+    
+    # Handle special todo fields using alondmnt's existing function
+    is_todo_filter = converted_params.get('is_todo_filter')
+    todo_completed_filter = converted_params.get('todo_completed_filter')
+    
+    if is_todo_filter is not None or todo_completed_filter is not None:
+        todo_filters = build_search_filters(is_todo_filter, todo_completed_filter)
+        search_parts.extend(todo_filters)
+    
+    # Handle other fields with simple concatenation (exclude the special todo fields)
+    special_fields = {'is_todo', 'todo_completed'}
+    
+    for field_name in filter_fields:
+        if field_name not in special_fields:
+            filter_value = converted_params.get(f"{field_name}_filter")
+            search_parts.append(f"{field_name}:{filter_value}")
+    
+    return search_parts
+
 def format_search_criteria(base_criteria: str, task: Optional[bool], completed: Optional[bool]) -> str:
     """Format search criteria description with filters."""
     criteria_parts = [base_criteria]
@@ -235,6 +274,76 @@ def format_no_results_with_pagination(item_type: str, criteria: str, offset: int
 
 # Common fields list for note operations
 COMMON_NOTE_FIELDS = "id,title,body,created_time,updated_time,parent_id,is_todo,todo_completed"
+
+# Centralized registry for all accessible Joplin note fields
+# Each field definition includes: field_name, type_converter, in_common_fields
+JOPLIN_NOTE_FIELDS = {
+    'title': {
+        'type_converter': lambda x: x,
+        'in_common_fields': True,
+        'description': 'Note title'
+    },
+    'body': {
+        'type_converter': lambda x: x, 
+        'in_common_fields': True,
+        'description': 'Note content'
+    },
+    'is_todo': {
+        'type_converter': flexible_bool_converter,
+        'in_common_fields': True,
+        'description': 'Todo status'
+    },
+    'todo_completed': {
+        'type_converter': flexible_bool_converter,
+        'in_common_fields': True, 
+        'description': 'Todo completion status'
+    },
+    'parent_id': {
+        'type_converter': lambda x: x,
+        'in_common_fields': True,
+        'description': 'Notebook ID'
+    },
+    'author': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'Note author'
+    },
+    'source_url': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'Source URL'
+    },
+    'latitude': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'GPS latitude coordinate'
+    },
+    'longitude': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'GPS longitude coordinate'
+    },
+    'altitude': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'GPS altitude coordinate'
+    },
+    'markup_language': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'Note markup format: 1=Markdown, 2=HTML'
+    },
+    'user_created_time': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'Custom creation timestamp in milliseconds'
+    },
+    'user_updated_time': {
+        'type_converter': lambda x: x,
+        'in_common_fields': False,
+        'description': 'Custom update timestamp in milliseconds'
+    }
+}
 
 def parse_markdown_headings(body: str, start_line: int = 0) -> List[Dict[str, Any]]:
     """Parse markdown headings from content, skipping those in code blocks.
@@ -1805,7 +1914,8 @@ async def update_note(
     body: Annotated[Optional[str], Field(description="New content (optional)")] = None,
     is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo (optional)")] = None,
     todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed (optional)")] = None,
-    parent_id: Annotated[Optional[str], Field(description="Move note to different notebook (notebook ID, optional)")] = None,
+    parent_id: Annotated[Optional[str], Field(description="Move to different notebook (notebook ID, optional)")] = None,
+    parent_notebook: Annotated[Optional[str], Field(description="Move to different notebook (notebook name, optional)")] = None,
     author: Annotated[Optional[str], Field(description="Note author (optional)")] = None,
     source_url: Annotated[Optional[str], Field(description="Source URL for web clips (optional)")] = None,
     latitude: Annotated[Optional[float], Field(description="GPS latitude coordinate (optional)")] = None,
@@ -1818,7 +1928,10 @@ async def update_note(
     """Update an existing note in Joplin.
     
     Updates one or more properties of an existing note. At least one field must be provided.
-    Supports all REST API fields including moving notes between notebooks via parent_id.
+    Can update content and move between notebooks in a single operation.
+    
+    For moving notebooks: use either parent_id (notebook ID) OR parent_notebook (notebook name).
+    For move-only operations: use move_note() or bulk_move_notes() for clearer intent.
     
     Returns:
         str: Success message confirming the note was updated.
@@ -1826,7 +1939,8 @@ async def update_note(
     Examples:
         - update_note("note123", title="New Title") - Update only the title
         - update_note("note123", body="New content", is_todo=True) - Update content and convert to todo
-        - update_note("note123", parent_id="notebook456") - Move note to different notebook
+        - update_note("note123", title="Archive Note", parent_notebook="Archive") - Update title AND move to Archive notebook
+        - update_note("note123", title="Archive Note", parent_id="abc123def456") - Update title AND move using notebook ID
         - update_note("note123", latitude=40.7128, longitude=-74.0060) - Add GPS coordinates
     """
     
@@ -1834,6 +1948,13 @@ async def update_note(
     note_id = validate_joplin_id(note_id)
     is_todo = flexible_bool_converter(is_todo)
     todo_completed = flexible_bool_converter(todo_completed)
+    
+    # Handle parent_notebook → parent_id conversion
+    if parent_notebook is not None and parent_id is not None:
+        raise ValueError("Cannot specify both parent_id and parent_notebook. Use one or the other.")
+    
+    if parent_notebook is not None:
+        parent_id = get_notebook_id_by_name(parent_notebook)
     
     update_data = {}
     if title is not None: update_data["title"] = title
@@ -1854,25 +1975,81 @@ async def update_note(
         raise ValueError("At least one field must be provided for update")
     
     client = get_joplin_client()
-    client.modify_note(note_id, **update_data)
+    converted_update_data = apply_field_converters(**update_data)
+    client.modify_note(note_id, **converted_update_data)
     return format_update_success(ItemType.note, note_id)
+
+@create_tool("move_note", "Move note to different notebook")
+async def move_note(
+    note_id: Annotated[JoplinIdType, Field(description="Note ID to move")],
+    target_notebook: Annotated[Optional[str], Field(description="Target notebook name to move note to")] = None,
+    target_notebook_id: Annotated[Optional[str], Field(description="Target notebook ID (alternative to notebook name, optional)")] = None
+) -> str:
+    """Move a single note to a different notebook.
+    
+    Changes the parent notebook of a note by updating its parent_id field.
+    Specify either target_notebook (name) OR target_notebook_id (ID) - one is required.
+    
+    Returns:
+        str: Success message confirming the note was moved.
+    
+    Examples:
+        - move_note("note123", target_notebook="Archive") - Move note123 to Archive notebook
+        - move_note("note123", target_notebook_id="abc123def456") - Move using notebook ID
+    """
+    
+    # Validate parameters
+    note_id = validate_joplin_id(note_id)
+    
+    # Handle target_notebook → target_notebook_id conversion
+    if target_notebook is None and target_notebook_id is None:
+        raise ValueError("Must specify either target_notebook (name) or target_notebook_id (ID)")
+    
+    if target_notebook is not None and target_notebook_id is not None:
+        raise ValueError("Cannot specify both target_notebook and target_notebook_id. Use one or the other.")
+    
+    if target_notebook is not None:
+        target_notebook_id = get_notebook_id_by_name(target_notebook)
+    
+    target_notebook_id = validate_joplin_id(target_notebook_id)
+    
+    client = get_joplin_client()
+    
+    # Move the note (let Joplin API handle validation like update_note does)
+    try:
+        client.modify_note(note_id, parent_id=target_notebook_id)
+        return f"✅ Note moved successfully to target notebook"
+    except Exception as e:
+        raise RuntimeError(f"Failed to move note: {e}")
 
 @create_tool("bulk_move_notes", "Bulk move notes")
 async def bulk_move_notes(
     note_ids: Annotated[List[str], Field(description="List of note IDs to move")],
-    target_notebook_id: Annotated[str, Field(description="Target notebook ID to move notes to")]
+    target_notebook: Annotated[Optional[str], Field(description="Target notebook name to move notes to")] = None,
+    target_notebook_id: Annotated[Optional[str], Field(description="Target notebook ID (alternative to notebook name, optional)")] = None
 ) -> str:
     """Move multiple notes to a target notebook in a single operation.
     
     Efficiently moves multiple notes between notebooks by updating their parent_id field.
-    This is useful for reorganizing notes or bulk operations.
+    Specify either target_notebook (name) OR target_notebook_id (ID) - one is required.
     
     Returns:
         str: Success message with details of the bulk move operation.
     
     Examples:
-        - bulk_move_notes(["note1", "note2", "note3"], "notebook456") - Move 3 notes to notebook456
+        - bulk_move_notes(["note1", "note2", "note3"], target_notebook="Archive") - Move 3 notes to Archive
+        - bulk_move_notes(["note1", "note2"], target_notebook_id="abc123def456") - Move using notebook ID
     """
+    
+    # Handle target_notebook → target_notebook_id conversion
+    if target_notebook is None and target_notebook_id is None:
+        raise ValueError("Must specify either target_notebook (name) or target_notebook_id (ID)")
+    
+    if target_notebook is not None and target_notebook_id is not None:
+        raise ValueError("Cannot specify both target_notebook and target_notebook_id. Use one or the other.")
+    
+    if target_notebook is not None:
+        target_notebook_id = get_notebook_id_by_name(target_notebook)
     
     # Validate target notebook ID
     target_notebook_id = validate_joplin_id(target_notebook_id)
@@ -1887,13 +2064,7 @@ async def bulk_move_notes(
     
     client = get_joplin_client()
     
-    # Verify target notebook exists
-    try:
-        client.get_folder(target_notebook_id, fields="id,title")
-    except Exception as e:
-        raise ValueError(f"Target notebook not found: {target_notebook_id}")
-    
-    # Perform bulk move operations
+    # Perform bulk move operations (let Joplin API handle validation like update_note does)
     success_count = 0
     failed_moves = []
     
@@ -1918,6 +2089,119 @@ async def bulk_move_notes(
         result_lines.extend([f"  - {error}" for error in failed_moves])
     
     return "\n".join(result_lines)
+
+def extract_query_fields(query: str) -> List[str]:
+    """Extract field names from query string (e.g. 'title:Example author:Albert' -> ['title', 'author'])"""
+    import re
+    pattern = r'(?:^|\s)(\w+):'
+    fields = re.findall(pattern, query)
+    return list(set(fields))  # Uniquify
+
+def build_conditional_fields_list(**filter_params) -> List[str]:
+    """Build list of fields needed for conditional checks from *_filter parameters"""
+    conditional_fields = []
+    
+    # Use centralized field registry instead of hardcoded mapping
+    for field_name in JOPLIN_NOTE_FIELDS.keys():
+        filter_param_name = f"{field_name}_filter"
+        if filter_params.get(filter_param_name) is not None:
+            conditional_fields.append(field_name)
+    
+    return list(set(conditional_fields))  # Uniquify
+
+def build_enhanced_field_list(base_fields: str, additional_fields: List[str]) -> str:
+    """Combine base fields with additional fields, removing duplicates"""
+    base_list = [f.strip() for f in base_fields.split(',')]
+    all_fields = base_list + additional_fields
+    unique_fields = list(dict.fromkeys(all_fields))  # Preserve order while uniquifying
+    return ','.join(unique_fields)
+
+def generate_field_pars(**params) -> dict:
+    """Extract non-None field lists from parameters using registry.
+    
+    Returns:
+        {
+            'update_fields': [field_names with non-None update values],
+            'filter_fields': [field_names with non-None filter values],
+            'all_field_names': [all field names from registry]
+        }
+    """
+    update_fields = []
+    filter_fields = []
+    all_field_names = list(JOPLIN_NOTE_FIELDS.keys())
+    
+    for field_name in all_field_names:
+        if params.get(field_name) is not None:
+            update_fields.append(field_name)
+        if params.get(f"{field_name}_filter") is not None:
+            filter_fields.append(field_name)
+    
+    return {
+        'update_fields': update_fields,
+        'filter_fields': filter_fields, 
+        'all_field_names': all_field_names
+    }
+
+def generate_field_checks(notes, **params) -> bool:
+    """Check if filter conditions match note values.
+    
+    Args:
+        notes: The note object to check
+        **params: Parameter values including filter values
+        
+    Returns:
+        bool: True if all filter conditions match (or no conditions), False otherwise
+    """
+    field_pars = generate_field_pars(**params)
+    filter_fields = field_pars['filter_fields']
+    
+    if not filter_fields:
+        return True  # No conditions to check
+    
+    # Build lists for comparison using list operations
+    filter_values_required = [params.get(f"{field}_filter") for field in filter_fields]
+    filter_values_found = [getattr(notes, field, None) for field in filter_fields]
+    
+    return filter_values_required == filter_values_found
+
+def get_conditional_fetch_fields(filter_fields) -> str:
+    """Build comma-separated field string for fetching conditional check fields.
+    
+    Args:
+        filter_fields: List of field names that need to be fetched
+        
+    Returns:
+        str: Comma-separated field string (always includes 'id')
+    """
+    # Use list operations to build field list, ensuring 'id' is first
+    fetch_fields = ['id'] + filter_fields
+    unique_fields = list(dict.fromkeys(fetch_fields))  # Remove duplicates while preserving order
+    return ','.join(unique_fields)
+
+def apply_field_converters(**params) -> dict:
+    """Apply type converters to field parameters using registry.
+    
+    Args:
+        **params: All function parameters
+        
+    Returns:
+        dict: Updated parameters with converted values
+    """
+    updated_params = params.copy()
+    
+    for field_name, field_info in JOPLIN_NOTE_FIELDS.items():
+        converter = field_info['type_converter']
+        
+        # Apply converter to main field parameter
+        if field_name in updated_params and updated_params[field_name] is not None:
+            updated_params[field_name] = converter(updated_params[field_name])
+        
+        # Apply converter to filter parameter  
+        filter_param = f"{field_name}_filter"
+        if filter_param in updated_params and updated_params[filter_param] is not None:
+            updated_params[filter_param] = converter(updated_params[filter_param])
+    
+    return updated_params
 
 def extract_note_ids_from_result(formatted_result: str, limit: int) -> List[str]:
     """Extract note IDs from formatted search results, limited to specified count.
@@ -1950,13 +2234,45 @@ async def search_and_bulk_update_preview(
     query: Annotated[str, Field(description="Search text or '*' for all notes")],
     preview_limit: Annotated[int, Field(description="Number of notes to show in preview (default: 5)")] = 5,
     inspect_count: Annotated[int, Field(description="Number of notes to show full content for (default: 2)")] = 2,
-    task: Annotated[OptionalBoolType, Field(description="Filter by task type (default: None)")] = None,
-    completed: Annotated[OptionalBoolType, Field(description="Filter by completion status (default: None)")] = None
+    get_conditional_update_counts: Annotated[bool, Field(description="Gets affected vs skipped counts based on filters for conditional updates (slower but more accurate)")] = False,
+    condition_search_on_TODOs: Annotated[bool, Field(description="Add filters to search query to match current_is_todo and current_todo_completed (default: False)")] = False,
+    # Update-parameters (optional)
+    title: Annotated[Optional[str], Field(description="New title to simulate (optional)")] = None,
+    body: Annotated[Optional[str], Field(description="New content to simulate (optional)")] = None,
+    is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo to simulate (optional)")] = None,
+    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed to simulate (optional)")] = None,
+    parent_id: Annotated[Optional[str], Field(description="Move notes to different notebook to simulate (notebook ID, optional)")] = None,
+    parent_notebook: Annotated[Optional[str], Field(description="Move notes to different notebook to simulate (notebook name, optional)")] = None,
+    author: Annotated[Optional[str], Field(description="Note author to simulate (optional)")] = None,
+    source_url: Annotated[Optional[str], Field(description="Source URL to simulate (optional)")] = None,
+    latitude: Annotated[Optional[float], Field(description="GPS latitude coordinate to simulate (optional)")] = None,
+    longitude: Annotated[Optional[float], Field(description="GPS longitude coordinate to simulate (optional)")] = None,
+    altitude: Annotated[Optional[float], Field(description="GPS altitude coordinate to simulate (optional)")] = None,
+    markup_language: Annotated[Optional[int], Field(description="Note markup format: 1=Markdown, 2=HTML to simulate (optional)")] = None,
+    user_created_time: Annotated[Optional[int], Field(description="Custom creation timestamp in milliseconds to simulate (optional)")] = None,
+    user_updated_time: Annotated[Optional[int], Field(description="Custom update timestamp in milliseconds to simulate (optional)")] = None,
+    # Filter-parameters for Conditional updates
+    title_filter: Annotated[Optional[str], Field(description="Only update if current title matches this (optional)")] = None,
+    body_filter: Annotated[Optional[str], Field(description="Only update if current body matches this (optional)")] = None,
+    is_todo_filter: Annotated[OptionalBoolType, Field(description="Only update if current is_todo matches this (optional)")] = None,
+    todo_completed_filter: Annotated[OptionalBoolType, Field(description="Only update if current todo_completed matches this (optional)")] = None,
+    parent_id_filter: Annotated[Optional[str], Field(description="Only update if current parent_id matches this (optional)")] = None,
+    author_filter: Annotated[Optional[str], Field(description="Only update if current author matches this (optional)")] = None,
+    source_url_filter: Annotated[Optional[str], Field(description="Only update if current source_url matches this (optional)")] = None,
+    latitude_filter: Annotated[Optional[float], Field(description="Only update if current latitude matches this (optional)")] = None,
+    longitude_filter: Annotated[Optional[float], Field(description="Only update if current longitude matches this (optional)")] = None,
+    altitude_filter: Annotated[Optional[float], Field(description="Only update if current altitude matches this (optional)")] = None,
+    markup_language_filter: Annotated[Optional[int], Field(description="Only update if current markup_language matches this (optional)")] = None,
+    user_created_time_filter: Annotated[Optional[int], Field(description="Only update if current user_created_time matches this (optional)")] = None,
+    user_updated_time_filter: Annotated[Optional[int], Field(description="Only update if current user_updated_time matches this (optional)")] = None
 ) -> str:
     """Preview search results for bulk update operations.
     
     Shows three levels of information:
-    1. Total count of matching notes (from pagination header)
+    1a. Total count of matching notes
+    (faster: obtained from search query return from pagination header)
+    1b. Total notes to be updated or skipped based on filters 
+    (slower: only returned if get_conditional_update_counts = True)
     2. Preview of first N notes with metadata (titles, IDs, dates)
     3. Full content inspection of first few notes for verification
     
@@ -1970,24 +2286,153 @@ async def search_and_bulk_update_preview(
         - search_and_bulk_update_preview("*", task=True, preview_limit=10) - Preview 10 todos
     """
     
-    # Get preview results using existing find_notes function
-    preview_result = await find_notes(query, limit=preview_limit, offset=0, task=task, completed=completed)
+    # NOTE: Cannot do early conversion with locals().update(apply_field_converters(**locals()))
+    # because we lose information if we convert todo_completed timestamp to boolean
+    # TODO: Consider separating todo_completed_time (timestamp) vs completed (boolean) parameters
     
-    # Extract note IDs from the formatted result for content inspection
-    note_ids = extract_note_ids_from_result(preview_result, inspect_count)
+    # Handle parent_notebook → parent_id conversion
+    if parent_notebook is not None and parent_id is not None:
+        raise ValueError("Cannot specify both parent_id and parent_notebook. Use one or the other.")
     
-    # Get full content for specified notes
-    full_content_parts = []
-    if note_ids:
-        for note_id in note_ids:
-            try:
-                note_content = await get_note(note_id)
-                full_content_parts.append(f"--- NOTE {note_id} CONTENT ---\n{note_content}\n")
-            except Exception as e:
-                full_content_parts.append(f"--- NOTE {note_id} ERROR ---\nCould not retrieve: {str(e)}\n")
+    if parent_notebook is not None:
+        parent_id = get_notebook_id_by_name(parent_notebook)
     
-    # Combine preview with content inspection
+    client = get_joplin_client()
+    
+    # Build enhanced field list for search phase (to verify query success)
+    query_fields = extract_query_fields(query)
+    search_fields = build_enhanced_field_list(COMMON_NOTE_FIELDS, query_fields)
+    
+    # Build conditional field list for GET phase (only fields needed for conditional checks)
+    field_pars = generate_field_pars(**locals())
+    filter_fields = field_pars['filter_fields']
+    get_fields = get_conditional_fetch_fields(filter_fields)
+    
+    # Get notes using conditional search logic
+    try:
+        if condition_search_on_TODOs:
+            # Use alondmnt's query building logic with *_filter parameters
+            if query.strip() == "*":
+                # List all notes with filters
+                search_filters = build_general_search_filters(**locals())
+                
+                if search_filters:
+                    # Use search with filters
+                    search_query = " ".join(search_filters)
+                    results = client.search_all(query=search_query, fields=search_fields)
+                    notes = process_search_results(results)
+                else:
+                    # No filters, get all notes
+                    results = client.get_all_notes(fields=search_fields)
+                    notes = process_search_results(results)
+                    # Sort by updated time, newest first
+                    notes = sorted(notes, key=lambda x: getattr(x, 'updated_time', 0), reverse=True)
+            else:
+                # Build search query with text and filters
+                search_parts = [query]
+                search_parts.extend(build_general_search_filters(**locals()))
+                
+                search_query = " ".join(search_parts)
+                results = client.search_all(query=search_query, fields=search_fields)
+                notes = process_search_results(results)
+        else:
+            # Just use user's raw query string directly
+            if query.strip() == "*":
+                results = client.get_all_notes(fields=search_fields)
+                notes = process_search_results(results)
+                # Sort by updated time, newest first
+                notes = sorted(notes, key=lambda x: getattr(x, 'updated_time', 0), reverse=True)
+            else:
+                results = client.search_all(query=query, fields=search_fields)
+                notes = process_search_results(results)
+        
+        # Apply pagination for preview
+        paginated_notes, total_count = apply_pagination(notes, preview_limit, 0)
+        
+        if not paginated_notes:
+            return f"No notes found matching query: {query}"
+        
+        # Format preview result using the same function as find_notes
+        if query.strip() == "*":
+            search_description = "all notes"
+        else:
+            search_description = f'text search: {query}'
+        
+        preview_result = format_search_results_with_pagination(
+            search_description, paginated_notes, total_count, preview_limit, 0, "search_results", original_query=query
+        )
+        
+        # Simulate conditional updates if requested
+        affected_count = 0
+        skipped_count = 0
+        conditional_simulation_result = ""
+        
+        if get_conditional_update_counts:
+            # Use same conditional logic as search_and_bulk_update_execute
+            def should_update_field(note, field_name, new_value, current_required_value):
+                if new_value is None:
+                    return False
+                if current_required_value is None:
+                    return True
+                current_value = getattr(note, field_name, None)
+                return current_value == current_required_value
+            
+            # Use helper functions to replace hardcoded field enumeration
+            field_pars = generate_field_pars(**locals())
+            update_fields = field_pars['update_fields']
+            update_fields_provided = len(update_fields) > 0
+            
+            if update_fields_provided:
+                # Simulate updates on all found notes (not just paginated preview)
+                for search_note in notes:
+                    note_id = getattr(search_note, 'id')
+                    
+                    # Fetch individual note with only needed fields for conditional checks
+                    if filter_fields:
+                        note_fields = client.get_note(note_id, fields=get_fields)  # get_fields already includes 'id'
+                    else:
+                        # Convert search_note to same structure as client.get_note for consistency
+                        note_fields = search_note
+                    
+                    # Use helper functions to replace hardcoded field enumeration
+                    field_pars = generate_field_pars(**locals())
+                    has_updates = len(field_pars['update_fields']) > 0
+                    conditions_match = generate_field_checks(note_fields, **locals())
+                    
+                    if has_updates and conditions_match:
+                        affected_count += 1
+                    else:
+                        skipped_count += 1
+                
+                conditional_simulation_result = f"\n\n=== CONDITIONAL UPDATE SIMULATION ===\nTotal notes found: {total_count}\nNotes that would be updated: {affected_count}\nNotes that would be skipped: {skipped_count}\n"
+        
+        # Extract note IDs for content inspection
+        note_ids = extract_note_ids_from_result(preview_result, inspect_count)
+        
+        # Get full content for specified notes using direct API calls
+        full_content_parts = []
+        if note_ids:
+            for note_id in note_ids:
+                try:
+                    # Use client.get_note directly (following alondmnt's pattern)
+                    note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
+                    if note and hasattr(note, 'body') and hasattr(note, 'title'):
+                        content_preview = note.body[:500] + "..." if len(note.body) > 500 else note.body
+                        full_content_parts.append(f"--- NOTE {note_id} ({note.title}) ---\n{content_preview}\n")
+                    else:
+                        full_content_parts.append(f"--- NOTE {note_id} ERROR ---\nNote not found or incomplete data\n")
+                except Exception as e:
+                    full_content_parts.append(f"--- NOTE {note_id} ERROR ---\nCould not retrieve: {str(e)}\n")
+    
+    except Exception as e:
+        return f"Error during preview: {str(e)}"
+    
+    # Combine preview with conditional simulation and content inspection
     result_parts = [preview_result]
+    
+    # Add conditional simulation results if performed
+    if conditional_simulation_result:
+        result_parts.append(conditional_simulation_result)
     
     if full_content_parts:
         result_parts.extend([
@@ -2009,6 +2454,7 @@ async def search_and_bulk_update_execute(
     is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo (optional)")] = None,
     todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed (optional)")] = None,
     parent_id: Annotated[Optional[str], Field(description="Move notes to different notebook (notebook ID, optional)")] = None,
+    parent_notebook: Annotated[Optional[str], Field(description="Move notes to different notebook (notebook name, optional)")] = None,
     author: Annotated[Optional[str], Field(description="Note author (optional)")] = None,
     source_url: Annotated[Optional[str], Field(description="Source URL for web clips (optional)")] = None,
     latitude: Annotated[Optional[float], Field(description="GPS latitude coordinate (optional)")] = None,
@@ -2017,8 +2463,20 @@ async def search_and_bulk_update_execute(
     markup_language: Annotated[Optional[int], Field(description="Note markup format: 1=Markdown, 2=HTML (optional)")] = None,
     user_created_time: Annotated[Optional[int], Field(description="Custom creation timestamp in milliseconds (optional)")] = None,
     user_updated_time: Annotated[Optional[int], Field(description="Custom update timestamp in milliseconds (optional)")] = None,
-    task: Annotated[OptionalBoolType, Field(description="Filter by task type (must match preview)")] = None,
-    completed: Annotated[OptionalBoolType, Field(description="Filter by completion status (must match preview)")] = None
+    # Filter parameters - only update if current value matches (consistent with preview function)
+    title_filter: Annotated[Optional[str], Field(description="Only update if current title matches this (optional)")] = None,
+    body_filter: Annotated[Optional[str], Field(description="Only update if current body matches this (optional)")] = None,
+    is_todo_filter: Annotated[OptionalBoolType, Field(description="Only update if current is_todo matches this (optional)")] = None,
+    todo_completed_filter: Annotated[OptionalBoolType, Field(description="Only update if current todo_completed matches this (optional)")] = None,
+    parent_id_filter: Annotated[Optional[str], Field(description="Only update if current parent_id matches this (optional)")] = None,
+    author_filter: Annotated[Optional[str], Field(description="Only update if current author matches this (optional)")] = None,
+    source_url_filter: Annotated[Optional[str], Field(description="Only update if current source_url matches this (optional)")] = None,
+    latitude_filter: Annotated[Optional[float], Field(description="Only update if current latitude matches this (optional)")] = None,
+    longitude_filter: Annotated[Optional[float], Field(description="Only update if current longitude matches this (optional)")] = None,
+    altitude_filter: Annotated[Optional[float], Field(description="Only update if current altitude matches this (optional)")] = None,
+    markup_language_filter: Annotated[Optional[int], Field(description="Only update if current markup_language matches this (optional)")] = None,
+    user_created_time_filter: Annotated[Optional[int], Field(description="Only update if current user_created_time matches this (optional)")] = None,
+    user_updated_time_filter: Annotated[Optional[int], Field(description="Only update if current user_updated_time matches this (optional)")] = None
 ) -> str:
     """Execute bulk update operation on notes matching search criteria.
     
@@ -2039,23 +2497,33 @@ async def search_and_bulk_update_execute(
     task = flexible_bool_converter(task)
     completed = flexible_bool_converter(completed)
     
-    # Build update data (same logic as update_note)
-    update_data = {}
-    if title is not None: update_data["title"] = title
-    if body is not None: update_data["body"] = body
-    if is_todo is not None: update_data["is_todo"] = 1 if is_todo else 0
-    if todo_completed is not None: update_data["todo_completed"] = 1 if todo_completed else 0
-    if parent_id is not None: update_data["parent_id"] = parent_id
-    if author is not None: update_data["author"] = author
-    if source_url is not None: update_data["source_url"] = source_url
-    if latitude is not None: update_data["latitude"] = latitude
-    if longitude is not None: update_data["longitude"] = longitude
-    if altitude is not None: update_data["altitude"] = altitude
-    if markup_language is not None: update_data["markup_language"] = markup_language
-    if user_created_time is not None: update_data["user_created_time"] = user_created_time
-    if user_updated_time is not None: update_data["user_updated_time"] = user_updated_time
+    # Handle parent_notebook → parent_id conversion
+    if parent_notebook is not None and parent_id is not None:
+        raise ValueError("Cannot specify both parent_id and parent_notebook. Use one or the other.")
     
-    if not update_data:
+    if parent_notebook is not None:
+        parent_id = get_notebook_id_by_name(parent_notebook)
+    
+    # Validate conditional parameters
+    is_todo_filter = flexible_bool_converter(is_todo_filter)
+    todo_completed_filter = flexible_bool_converter(todo_completed_filter)
+    
+    def should_update_field(note, field_name, new_value, current_required_value):
+        """Check if a field should be updated based on conditions"""
+        if new_value is None:                    # Not updating this field
+            return False
+        if current_required_value is None:       # No condition - update unconditionally  
+            return True
+        
+        # Check if note's current value matches required current value
+        current_value = getattr(note, field_name, None)
+        return current_value == current_required_value
+    
+    # Check if any update fields are provided using helper function
+    field_pars = generate_field_pars(**locals())
+    update_fields = field_pars['update_fields']
+    
+    if not update_fields:
         raise ValueError("At least one update field must be provided")
     
     # Re-run search to get current results (bypass pagination to get all results)
@@ -2063,7 +2531,7 @@ async def search_and_bulk_update_execute(
     
     # Handle special case for listing all notes with filters
     if query.strip() == "*":
-        search_filters = build_search_filters(task, completed)
+        search_filters = build_general_search_filters(**locals())
         if search_filters:
             search_query = " ".join(search_filters)
             results = client.search_all(query=search_query, fields=COMMON_NOTE_FIELDS)
@@ -2073,7 +2541,7 @@ async def search_and_bulk_update_execute(
             notes = process_search_results(results)
     else:
         # Regular text search with filters
-        search_filters = build_search_filters(task, completed)
+        search_filters = build_general_search_filters(**locals())
         if search_filters:
             combined_query = f"{query} {' '.join(search_filters)}"
             results = client.search_all(query=combined_query, fields=COMMON_NOTE_FIELDS)
@@ -2089,22 +2557,44 @@ async def search_and_bulk_update_execute(
         actual_first = getattr(notes[0], 'title', 'Unknown')
         raise ValueError(f"First note has changed: expected '{first_title}', found '{actual_first}'")
     
-    # Perform bulk updates
+    # Perform bulk updates using registry-based approach (matches preview function)
+    field_pars = generate_field_pars(**locals())
+    update_fields = field_pars['update_fields']
+    
     success_count = 0
     failed_updates = []
+    skipped_count = 0
     
     for note in notes:
         note_id = getattr(note, 'id')
         try:
-            client.modify_note(note_id, **update_data)
-            success_count += 1
+            # Build update_data with conditional logic using registry
+            update_data = {}
+            for field_name in update_fields:
+                new_value = locals().get(field_name)
+                filter_value = locals().get(f"{field_name}_filter")
+                type_converter = JOPLIN_NOTE_FIELDS[field_name]['type_converter']
+                
+                if should_update_field(note, field_name, new_value, filter_value):
+                    update_data[field_name] = type_converter(new_value)
+            
+            # Only update if some fields passed conditions
+            if update_data:
+                client.modify_note(note_id, **update_data)
+                success_count += 1
+            else:
+                skipped_count += 1
+                
         except Exception as e:
             failed_updates.append(f"Note {note_id} ({getattr(note, 'title', 'Unknown')}): {str(e)}")
     
-    # Format response
-    update_summary = []
-    for key, value in update_data.items():
-        update_summary.append(f"{key}: {value}")
+    # Format response - show all fields that had update values provided using registry
+    attempted_updates = []
+    for field_name in update_fields:
+        new_value = locals().get(field_name)
+        filter_value = locals().get(f"{field_name}_filter")
+        condition_text = f" (if current={filter_value})" if filter_value is not None else ""
+        attempted_updates.append(f"{field_name}: {new_value}{condition_text}")
     
     result_lines = [
         f"operation: search_and_bulk_update_execute",
@@ -2112,7 +2602,8 @@ async def search_and_bulk_update_execute(
         f"search_query: {query}",
         f"total_notes: {len(notes)}",
         f"updated_successfully: {success_count}",
-        f"update_fields: {', '.join(update_summary)}"
+        f"skipped_notes: {skipped_count}",
+        f"attempted_updates: {', '.join(attempted_updates) if attempted_updates else 'none'}"
     ]
     
     if failed_updates:
@@ -2564,7 +3055,8 @@ async def _untag_note_impl(note_id: str, tag_name: str) -> str:
     # Use helper function to get tag ID
     tag_id = get_tag_id_by_name(tag_name)
     
-    client.remove_tag_from_note(tag_id, note_id)
+    # Remove tag from note using DELETE /tags/{tag_id}/notes/{note_id}
+    client.delete(f"/tags/{tag_id}/notes/{note_id}")
     return format_relation_success("removed tag from note", ItemType.note, f"{note_title} (ID: {note_id})", ItemType.tag, tag_name)
 
 
@@ -2610,6 +3102,178 @@ async def untag_note(
     Note: Both the note (by ID) and tag (by name) must exist in Joplin.
     """
     return await _untag_note_impl(note_id, tag_name)
+
+
+@create_tool("strip_note_tags", "Remove all tags from note")
+async def strip_note_tags(
+    note_id: Annotated[JoplinIdType, Field(description="Note ID to remove all tags from")]
+) -> str:
+    """Remove all tags from a specific note.
+    
+    Removes all existing tags from a note, effectively clearing its tag associations.
+    This is useful for resetting a note's categorization or cleaning up over-tagged notes.
+    
+    Args:
+        note_id: The ID of the note to remove all tags from
+    
+    Returns:
+        str: Success message with details of the tag removal operation.
+    
+    Examples:
+        - strip_note_tags("a1b2c3d4e5f6...") - Remove all tags from specific note
+        - strip_note_tags("note_id_123") - Clear all tags from the note
+    
+    Note: The note must exist (by ID). If the note has no tags, the operation succeeds with no changes.
+    """
+    
+    client = get_joplin_client()
+    
+    # Verify note exists and get info (following alondmnt's pattern)
+    try:
+        note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
+        note_title = getattr(note, 'title', 'Unknown Note')
+    except Exception:
+        raise ValueError(f"Note with ID '{note_id}' not found. Use find_notes to find available notes.")
+    
+    # Get all tags currently on this note
+    try:
+        fields_list = "id,title,created_time,updated_time"
+        tags_result = client.get_tags(note_id=note_id, fields=fields_list)
+        note_tags = process_search_results(tags_result)
+    except Exception as e:
+        raise RuntimeError(f"Failed to retrieve tags for note '{note_title}': {e}")
+    
+    if not note_tags:
+        return f"✅ Note '{note_title}' already has no tags"
+    
+    # Remove each tag from the note
+    successful_removals = []
+    failed_removals = []
+    
+    for tag in note_tags:
+        tag_id = getattr(tag, 'id', '')
+        tag_name = getattr(tag, 'title', 'Unknown Tag')
+        try:
+            client.delete(f"/tags/{tag_id}/notes/{note_id}")
+            successful_removals.append(tag_name)
+        except Exception as e:
+            failed_removals.append(f"'{tag_name}': {str(e)}")
+    
+    # Build result message
+    success_count = len(successful_removals)
+    total_count = len(note_tags)
+    
+    if failed_removals:
+        result_lines = [
+            f"✅ Partially stripped tags from note '{note_title}'",
+            f"Successfully removed: {success_count}/{total_count} tags",
+            f"Tags removed: {', '.join(successful_removals)}",
+            f"Failed removals: {', '.join(failed_removals)}"
+        ]
+        return "\n".join(result_lines)
+    else:
+        return f"✅ Successfully stripped all {success_count} tags from note '{note_title}': {', '.join(successful_removals)}"
+
+
+@create_tool("bulk_tag_notes", "Bulk tag notes")
+async def bulk_tag_notes(
+    note_ids: Annotated[List[str], Field(description="List of note IDs to add tags to")],
+    tag_names: Annotated[List[str], Field(description="List of tag names to add to each note")]
+) -> str:
+    """Apply multiple tags to multiple notes in a single bulk operation.
+    
+    Efficiently adds all specified tags to all specified notes using a cartesian product approach.
+    Each tag will be applied to each note, creating comprehensive tagging across multiple items.
+    
+    Args:
+        note_ids: List of note IDs to add tags to
+        tag_names: List of tag names to add to each note
+    
+    Returns:
+        str: Detailed success message with operation statistics.
+    
+    Examples:
+        - bulk_tag_notes(["note1", "note2"], ["Important", "Work"]) - Apply 'Important' and 'Work' tags to both notes
+        - bulk_tag_notes(["abc123", "def456", "ghi789"], ["Project-Alpha"]) - Apply 'Project-Alpha' tag to 3 notes
+    
+    Note: All notes must exist (by ID) and all tags must exist (by name). Creates note-tag relationships for all combinations.
+    """
+    
+    # Validate inputs
+    if not note_ids:
+        raise ValueError("At least one note ID must be provided")
+    if not tag_names:
+        raise ValueError("At least one tag name must be provided")
+    
+    # Validate all note IDs
+    validated_note_ids = []
+    for note_id in note_ids:
+        validated_note_ids.append(validate_joplin_id(note_id))
+    
+    client = get_joplin_client()
+    
+    # Verify all notes exist and collect titles for reporting (matching alondmnt's pattern)
+    note_titles = {}
+    for note_id in validated_note_ids:
+        try:
+            note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
+            note_titles[note_id] = getattr(note, 'title', 'Unknown Note')
+        except Exception:
+            raise ValueError(f"Note with ID '{note_id}' not found. Use find_notes to find available notes.")
+    
+    # Apply all tags to all notes (cartesian product) - following alondmnt's pattern
+    successful_operations = []
+    failed_operations = []
+    total_operations = len(validated_note_ids) * len(tag_names)
+    
+    for note_id in validated_note_ids:
+        note_title = note_titles[note_id]
+        for tag_name in tag_names:
+            try:
+                # Use helper function to get tag ID (handles tag validation like alondmnt's pattern)
+                tag_id = get_tag_id_by_name(tag_name)
+                # Apply tag (let API handle the actual operation like alondmnt's pattern)
+                client.add_tag_to_note(tag_id, note_id)
+                successful_operations.append(f"'{tag_name}' → '{note_title}' ({note_id[:8]}...)")
+            except Exception as e:
+                failed_operations.append(f"'{tag_name}' → '{note_title}' ({note_id[:8]}...): {str(e)}")
+    
+    # Build result message
+    success_count = len(successful_operations)
+    failure_count = len(failed_operations)
+    
+    result_parts = [
+        f"OPERATION: BULK_TAG_NOTES",
+        f"STATUS: {'SUCCESS' if failure_count == 0 else 'PARTIAL_SUCCESS' if success_count > 0 else 'FAILED'}",
+        f"NOTES_PROCESSED: {len(validated_note_ids)}",
+        f"TAGS_APPLIED: {len(tag_names)}",
+        f"TOTAL_OPERATIONS: {total_operations}",
+        f"SUCCESSFUL_OPERATIONS: {success_count}",
+        f"FAILED_OPERATIONS: {failure_count}",
+        ""
+    ]
+    
+    if success_count > 0:
+        result_parts.append("SUCCESSFUL_TAGS:")
+        for operation in successful_operations:
+            result_parts.append(f"  ✓ {operation}")
+        result_parts.append("")
+    
+    if failure_count > 0:
+        result_parts.append("FAILED_TAGS:")
+        for operation in failed_operations:
+            result_parts.append(f"  ✗ {operation}")
+        result_parts.append("")
+    
+    # Summary message
+    if failure_count == 0:
+        result_parts.append(f"MESSAGE: Successfully applied {len(tag_names)} tags to {len(validated_note_ids)} notes ({success_count} total operations)")
+    elif success_count > 0:
+        result_parts.append(f"MESSAGE: Partially completed bulk tagging: {success_count} successful, {failure_count} failed operations")
+    else:
+        result_parts.append(f"MESSAGE: Bulk tagging failed: all {total_operations} operations failed")
+    
+    return "\n".join(result_parts)
 
 # === RESOURCES ===
 

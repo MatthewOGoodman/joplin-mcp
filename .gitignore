@@ -244,6 +244,9 @@ config/joplin_config.json
 temp-*.json
 *-config.json
 
+# MCP Configuration files (may contain tokens)
+*config*.json
+
 # Test output
 test_output/
 temp_test_files/
@@ -258,3 +261,4 @@ temp_test_files/
 # Local development overrides
 local_config.py
 dev_settings.py 
+.Rproj.user

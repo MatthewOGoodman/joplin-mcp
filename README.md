@@ -16,7 +16,7 @@ A **FastMCP-based Model Context Protocol (MCP) server** for [Joplin](https://jop
 
 ## What You Can Do
 
-This MCP server provides **21 optimized tools** for comprehensive Joplin integration:
+This MCP server provides **27 optimized tools** for comprehensive Joplin integration:
 
 ### **Note Management**
 - **Find & Search**: `find_notes`, `find_notes_with_tag`, `find_notes_in_notebook`, `get_all_notes`
@@ -366,7 +366,7 @@ python run_fastmcp_server.py --transport http --port 8000
 
 - **`run_fastmcp_server.py`** - FastMCP server launcher
 - **`src/joplin_mcp/`** - Main package directory
-  - `fastmcp_server.py` - Server implementation with 21 tools and Pydantic validation types
+  - `fastmcp_server.py` - Server implementation with 27 tools and Pydantic validation types
   - `config.py` - Configuration management
   - `server.py` - Legacy server implementation  
   - `ui_integration.py` - UI integration utilities
@@ -391,7 +391,7 @@ Starting Joplin FastMCP Server...
 Successfully connected to Joplin!
 Found X notebooks, Y notes, Z tags
 FastMCP server starting...
-Available tools: 21 tools ready
+Available tools: 27 tools ready
 ```
 
 ## Complete Tool Reference

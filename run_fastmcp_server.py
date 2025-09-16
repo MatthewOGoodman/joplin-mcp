@@ -77,24 +77,6 @@ Examples:
 if __name__ == "__main__":
     args = parse_args()
     
-    print("🚀 FastMCP Joplin Server Starting (PRODUCTION VERSION)")
-    print("⚡ This is the optimized FastMCP server, not the debug version")
-    
-    if args.config:
-        print(f"📋 Using config file: {args.config}")
-    else:
-        config_path = Path("joplin-mcp.json")
-        if config_path.exists():
-            print(f"📋 Using default config file: {config_path}")
-        else:
-            print("📋 Using auto-discovery for config")
-    
-    print(f"🚀 Transport: {args.transport.upper()}")
-    if args.transport == "http":
-        print(f"🌐 HTTP Server: {args.host}:{args.port}{args.path}")
-    
-    print("🔧 Press Ctrl+C to stop")
-    print("-" * 50)
     
     try:
         main(
