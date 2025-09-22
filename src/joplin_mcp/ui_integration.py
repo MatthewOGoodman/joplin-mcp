@@ -130,12 +130,15 @@ def prepare_docker_deployment(config_path: Path) -> None:
     try:
         import sys
         sys.path.append(str(project_root))
-        from docker_build import validate_docker_environment, build_docker_images
+        from docker_build import validate_docker_environment, build_docker_images, cleanup_old_containers
         
         # Validate Docker environment first
         if not validate_docker_environment():
             print_error("Docker environment validation failed")
             sys.exit(1)
+        
+        # Clean up old containers before building new images
+        cleanup_old_containers(image_name="joplin-mcp")
         
         # Build both dev and prod images
         success = build_docker_images(
@@ -524,10 +527,11 @@ class ChatInterface(ABC):
         mcp_config["env"].update(env_vars)
         
         # Docker networking fix: Replace localhost with host.docker.internal on macOS/Windows
+        # ONLY for Docker deployments - Python deployments should use localhost directly
         # This resolves the documented issue where Docker containers cannot reach host services
         # via localhost on macOS/Windows due to Docker Desktop's VM architecture
         import platform
-        if platform.system() in ["Darwin", "Windows"]:
+        if deployment_type == "docker" and platform.system() in ["Darwin", "Windows"]:
             if env_vars.get("JOPLIN_HOST") == "localhost":
                 mcp_config["env"]["JOPLIN_HOST"] = "host.docker.internal"
             # Also update the convenience JOPLIN_URL if it contains localhost

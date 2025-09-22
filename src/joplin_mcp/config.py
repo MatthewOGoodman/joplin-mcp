@@ -782,12 +782,12 @@ class JoplinMCPConfig:
             for filename in search_filenames:
                 file_path = Path.cwd() / filename
                 if file_path.exists():
-                    return cls.from_file(file_path)
+                    return cls.from_file_and_environment(file_path)
         else:
             # Search default paths
             for path in cls.get_default_config_paths():
                 if path.exists():
-                    return cls.from_file(path)
+                    return cls.from_file_and_environment(path)
 
         # If no file found, return default configuration
         return cls.from_environment()

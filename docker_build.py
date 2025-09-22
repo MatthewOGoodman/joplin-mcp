@@ -57,6 +57,47 @@ def validate_docker_environment() -> bool:
         return False
 
 
+def cleanup_old_containers(image_name: str = "joplin-mcp") -> None:
+    """Clean up old Docker containers before building new images.
+    
+    Stops and removes containers with standard naming patterns and any containers
+    built from the specified image to prevent conflicts with new deployments.
+    
+    Args:
+        image_name: Base name of Docker images to clean up containers for
+    """
+    print_step("Cleaning up old containers")
+    try:
+        # Stop old containers (ignore errors if none exist)
+        subprocess.run([
+            "docker", "stop", f"{image_name}-dev", f"{image_name}-prod"
+        ], capture_output=True, check=False)
+        
+        # Remove old containers (ignore errors if none exist)
+        subprocess.run([
+            "docker", "rm", f"{image_name}-dev", f"{image_name}-prod"
+        ], capture_output=True, check=False)
+        
+        # Also clean up any containers from old image tags
+        result = subprocess.run([
+            "docker", "ps", "-aq", "--filter", f"ancestor={image_name}"
+        ], capture_output=True, text=True, check=False)
+        
+        if result.stdout.strip():
+            container_ids = result.stdout.strip().split('\n')
+            subprocess.run([
+                "docker", "stop"
+            ] + container_ids, capture_output=True, check=False)
+            subprocess.run([
+                "docker", "rm"
+            ] + container_ids, capture_output=True, check=False)
+        
+        print_success("Old containers cleaned up")
+        
+    except Exception as e:
+        print_colored(f"Container cleanup had issues (this is usually fine): {e}", Colors.BLUE)
+
+
 def build_docker_images(
     project_root: Path,
     image_name: str = "joplin-mcp",
