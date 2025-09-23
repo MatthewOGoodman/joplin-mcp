@@ -246,6 +246,8 @@ temp-*.json
 
 # MCP Configuration files (may contain tokens)
 *config*.json
+*.json.backup
+*backup*.json
 
 # Test output
 test_output/

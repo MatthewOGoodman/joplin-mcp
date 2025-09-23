@@ -11,10 +11,22 @@ This is a **fork of alondmnt's joplin-mcp** project, chosen for its comprehensiv
 - **Fork Point**: `d5a5daa` (docs: updated README) - Last alondmnt commit before our development branch
 - **Current alondmnt HEAD**: `762e397` (fix: update Python version requirement in classifiers)
 
-### Development Installation Command
+### Development Installation Commands
+
+**Interactive Installation**:
 ```bash
 cd /Users/mattheworlando/Documents/Projects/Code_Projects/joplin-mcp
 source /Users/mattheworlando/miniforge3/etc/profile.d/conda.sh && conda activate joplin-mcp && python install.py
+```
+
+**Command-Line Installation**:
+```bash
+# Docker development (with environment token)
+export JOPLIN_TOKEN="your_token_here"
+python install.py --command-args --deployment docker --mode development
+
+# Python production
+python install.py --command-args --token "your_token_here" --deployment python --mode production
 ```
 
 ### ✅ Completed Enhancements
@@ -44,7 +56,11 @@ source /Users/mattheworlando/miniforge3/etc/profile.d/conda.sh && conda activate
 
 **Implementation Plan**:
    - ✅ **Analysis Complete**: Understood alondmnt's 9-path auto-discovery system and token priority
-   - ✅ **Template System**: Created `claude-desktop-config-complete.json.example` with 8 deployment modes
+   - ✅ **Template System**: Created `claude-desktop-config.deployment-templates.json` with 4 deployment modes:
+     - **joplin-python-installed**: Production Python package deployment
+     - **joplin-python-uvx**: Quick testing with uvx (zero-install)
+     - **joplin-docker-dev**: Development Docker with volume mounts
+     - **joplin-docker-prod**: Production Docker with self-contained code
    - ✅ **Step 1 COMPLETE**: Fixed `joplin-mcp.json` token to use environment variable fallback
    - ✅ **Step 2 COMPLETE**: Verified existing `switch_mode.py` works correctly with new token strategy
    - ✅ **Step 3 COMPLETE**: Environment variable dependencies are intentional (alondmnt's backup mechanism)
@@ -57,6 +73,34 @@ source /Users/mattheworlando/miniforge3/etc/profile.d/conda.sh && conda activate
    - ✅ **Deployment Switching**: Existing `switch_mode.py` works with template system and token flow
 
 **STRATEGY COMPLETE**: Successfully aligned our deployment switching with alondmnt's original token management
+
+4. **Command-Line Installation Flow (COMPLETED)**:
+   - ✅ **Parallel Implementation**: Created non-interactive command-line installation alongside existing interactive flow
+   - ✅ **Proper Token Saving**: Fixed to use `save_interactively()` instead of `save_to_file()` to include tokens
+   - ✅ **Docker Infrastructure**: Automatic Docker build and cleanup during command-line installation
+   - ✅ **Argument Interface**: `--command-args --deployment {python,docker} --mode {development,production} --token TOKEN`
+   - ✅ **Testing Verified**: Both interactive and command-line flows work correctly with proper token management
+
+5. **Mode Switching Redesign (COMPLETED)**:
+   - ✅ **Simplified Interface**: Redesigned `switch_mode.py` with `--mode {dev,prod}` argument structure
+   - ✅ **Automatic Deployment Detection**: Always detects and defaults to current deployment type
+   - ✅ **Non-Interactive Command-Line**: `--mode` arguments bypass all prompts for automation
+   - ✅ **Interactive Fallback**: Still prompts when no `--mode` specified for user-friendly operation
+   - ✅ **Smart Confirmation**: Dev→prod confirmation only in interactive mode, silent for command-line
+   - ✅ **Template Integration**: Leverages existing template-based configuration system
+
+   **Interface Examples**:
+   - `python -m src.joplin_mcp.switch_mode --mode dev` - Switch to development mode (non-interactive)
+   - `python -m src.joplin_mcp.switch_mode --mode prod` - Switch to production mode (non-interactive)
+   - `python -m src.joplin_mcp.switch_mode` - Interactive mode selection with prompts
+   - `python -m src.joplin_mcp.switch_mode --mode dev --deployment docker` - Advanced deployment override
+
+6. **Cross-Platform Docker Networking (COMPLETED)**:
+   - ✅ **OS Detection**: Automatic platform detection for Docker networking configuration
+   - ✅ **macOS/Windows Support**: Uses `host.docker.internal` for Docker Desktop environments
+   - ✅ **Linux Compatibility**: Uses `localhost` for native Docker environments
+   - ✅ **Dynamic Application**: OS fixes applied during config creation and mode switching
+   - ✅ **Template Variables**: Uses `${JOPLIN_HOST}` placeholders resolved at runtime
 
 ### ✅ Configuration Flow Architecture Implementation (COMPLETED)
 
@@ -205,11 +249,6 @@ JOPLIN_URL=http://localhost:41184
 JOPLIN_URL=http://host.docker.internal:41184
 ```
 
-### TODO: Cross-Platform Implementation
-**Cross-Platform Considerations**:
-- **Linux**: `localhost` works fine, `host.docker.internal` may not exist
-- **macOS/Windows**: Must use `host.docker.internal`
-- **Solution**: Use environment variable and configure per platform, or detect platform in code
 
 ### 3. Container State Management During Development
 
@@ -662,13 +701,32 @@ def create_base_mcp_config(self, config_path, is_development, deployment_type):
     return mcp_config
 ```
 
-### **Template Configuration Keys**
+### **Deployment Template System**
 
-**From `claude-desktop-config-complete.json.example`**:
-- **Python + Production**: `"joplin-python-installed"` → `"command": "joplin-mcp-server"`
-- **Python + Development**: `"joplin-python-installed"` → Same as production for Python
-- **Docker + Development**: `"joplin-docker-dev"` → Volume mount source code
-- **Docker + Production**: `"joplin-docker-prod"` → Self-contained image
+**Template File**: `claude-desktop-config.deployment-templates.json`
+
+This file contains configuration patterns for 8 deployment modes (4 current + 4 future):
+
+**Current Deployable Modes (4)** - STDIO Transport:
+- **Python + Production**: `"joplin-python-installed"` → Uses `"command": "joplin-mcp-server"` (stable pip package)
+- **Python + Development**: `"joplin-python-uvx"` → Uses `"command": "uvx", "args": ["joplin-mcp"]` (quick package testing)
+- **Docker + Development**: `"joplin-docker-dev"` → Volume mounts source code for live changes
+- **Docker + Production**: `"joplin-docker-prod"` → Self-contained image with packaged code
+
+**Future HTTP Transport Modes (4)** - Multi-MCP Support:
+- **SSE Transport**: `"joplin-sse"` → Server-Sent Events (requires separate server startup)
+- **HTTP Transport**: `"joplin-http"` → Standard HTTP (requires separate server startup)
+- **Streamable HTTP**: `"joplin-streamable-http"` → Streaming HTTP (requires separate server startup)
+- **Docker SSE**: `"joplin-docker-sse"` → Containerized SSE transport
+
+**Key Design Principles**:
+1. **Template-driven configuration**: Code reads templates and fills in project-specific paths
+2. **Minimal environment variables**: Templates use only `"JOPLIN_TOKEN": "${JOPLIN_TOKEN}"`
+3. **Transport separation**: STDIO for current single MCP, HTTP for future multi-MCP deployments
+4. **OS-aware networking**: Applied only when necessary (Docker on macOS/Windows)
+5. **Development philosophy**:
+   - Python development uses `uvx` for quick package testing (validates packaging works)
+   - Real development work uses Docker with live code mounting
 
 ### **Benefits of This Approach**:
 1. **Minimal changes** to alondmnt's proven flow

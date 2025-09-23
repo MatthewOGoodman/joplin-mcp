@@ -461,9 +461,9 @@ class ChatInterface(ABC):
         """Find the configuration file for this chat interface."""
         pass
     
-    def create_base_mcp_config(
-        self, 
-        config_path: Path, 
+    def create_base_mcp_config_old(
+        self,
+        config_path: Path,
         is_development: bool = False,
         deployment_type: str = "python"
     ) -> Dict[str, Any]:
@@ -539,14 +539,107 @@ class ChatInterface(ABC):
                 mcp_config["env"]["JOPLIN_URL"] = env_vars["JOPLIN_URL"].replace("localhost", "host.docker.internal")
         
         return mcp_config
-    
+
+    def create_base_mcp_config_new(
+        self,
+        config_path: Path,
+        is_development: bool = False,
+        deployment_type: str = "python"
+    ) -> Dict[str, Any]:
+        """Create base MCP server configuration using deployment templates."""
+        import platform
+
+        # Read deployment template
+        template_config = self._read_deployment_template(deployment_type, is_development)
+
+        # Get all environment variables for template substitution
+        env_vars = self.get_joplin_environment_variables(config_path)
+
+        # Simple fix for Docker on macOS/Windows before template substitution
+        if deployment_type == "docker" and platform.system() in ["Darwin", "Windows"]:
+            if env_vars.get("JOPLIN_HOST") == "localhost":
+                env_vars["JOPLIN_HOST"] = "host.docker.internal"
+            if "localhost" in env_vars.get("JOPLIN_URL", ""):
+                env_vars["JOPLIN_URL"] = env_vars["JOPLIN_URL"].replace("localhost", "host.docker.internal")
+
+        # Substitute all ${VARIABLE} placeholders with actual values
+        template_config = self._substitute_template_placeholders(template_config, env_vars)
+
+        return template_config
+
+    def _read_deployment_template(self, deployment_type: str, is_development: bool) -> Dict[str, Any]:
+        """Read the appropriate deployment template from claude-desktop-config.deployment-templates.json."""
+
+        # Map deployment choices to template keys
+        template_key_map = {
+            ("python", True): "joplin-python-uvx",        # Python development/testing
+            ("python", False): "joplin-python-installed", # Python production
+            ("docker", True): "joplin-docker-dev",        # Docker development
+            ("docker", False): "joplin-docker-prod"       # Docker production
+        }
+
+        template_key = template_key_map.get((deployment_type, is_development))
+        if not template_key:
+            raise ValueError(f"Unsupported deployment configuration: {deployment_type}, is_development={is_development}")
+
+        # Find template file in project root
+        template_path = Path(__file__).parent.parent.parent / "claude-desktop-config.deployment-templates.json"
+
+        if not template_path.exists():
+            raise FileNotFoundError(f"Template file not found: {template_path}")
+
+        try:
+            with open(template_path) as f:
+                templates = json.load(f)
+
+            if "mcpServers" not in templates or template_key not in templates["mcpServers"]:
+                raise KeyError(f"Template key '{template_key}' not found in template file")
+
+            # Deep copy to avoid modifying the original template
+            import copy
+            template_config = copy.deepcopy(templates["mcpServers"][template_key])
+
+            # Remove comment fields that aren't part of the actual config
+            template_config.pop("_comment", None)
+
+            return template_config
+
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in template file {template_path}: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to read deployment template: {e}")
+
+    def _substitute_template_placeholders(self, config: Dict[str, Any], env_vars: Dict[str, str]) -> Dict[str, Any]:
+        """Substitute ${VARIABLE} placeholders in template config with actual values."""
+        import copy
+        import json
+
+        # Convert to JSON string for easy placeholder substitution
+        config_json = json.dumps(config)
+
+        # Substitute all ${VARIABLE} placeholders
+        for key, value in env_vars.items():
+            if value is not None:
+                placeholder = f"${{{key}}}"
+                config_json = config_json.replace(placeholder, str(value))
+
+        # Convert back to dict
+        return json.loads(config_json)
+
+    # Set up switchable alias - can easily revert to old version if needed
+    create_base_mcp_config = create_base_mcp_config_new
+
     def get_joplin_environment_variables(self, config_path: Path) -> Dict[str, str]:
         """Extract Joplin environment variables from config file.
 
         Standardizes on JOPLIN_TOKEN, JOPLIN_HOST, JOPLIN_PORT, JOPLIN_VERIFY_SSL.
-        Also sets JOPLIN_URL for maximum compatibility where supported.
+        Also sets JOPLIN_URL and PROJECT_ROOT if needed for template substitution.
         """
         env_vars = {}
+
+        # Always provide PROJECT_ROOT if needed for template substitution
+        # Calculate project root relative to this source file location
+        env_vars["PROJECT_ROOT"] = str(Path(__file__).parent.parent.parent)
 
         if not config_path.exists():
             return env_vars
@@ -555,7 +648,7 @@ class ChatInterface(ABC):
             # Preferred path using typed config loader
             from .config import JoplinMCPConfig
 
-            cfg = JoplinMCPConfig.from_file(config_path)
+            cfg = JoplinMCPConfig.from_file_and_environment(config_path)
 
             if cfg.token:
                 env_vars["JOPLIN_TOKEN"] = cfg.token
@@ -583,10 +676,10 @@ class ChatInterface(ABC):
                     env_vars["JOPLIN_PORT"] = str(port)
                 if raw.get("verify_ssl") is False:
                     env_vars["JOPLIN_VERIFY_SSL"] = "false"
-                    
+
             except (json.JSONDecodeError, FileNotFoundError):
                 pass
-        
+
         return env_vars
     
     def create_mcp_config(

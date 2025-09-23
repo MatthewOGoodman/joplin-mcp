@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any
 
 from .ui_integration import (
     print_step, print_success, print_error, print_warning, print_info, print_colored, Colors,
-    ClaudeDesktopIntegration
+    ClaudeDesktopInterface
 )
 from .config import JoplinMCPConfig
 
@@ -60,8 +60,8 @@ def detect_current_deployment(mcp_config: MCPModeConfig) -> tuple[str, bool]:
         Tuple of (deployment_type, is_development)
     """
     try:
-        claude_integration = ClaudeDesktopIntegration()
-        claude_config_path = claude_integration.get_config_path()
+        claude_interface = ClaudeDesktopInterface()
+        claude_config_path = claude_interface.find_config_file()
         
         if not claude_config_path or not claude_config_path.exists():
             print_error("Claude Desktop config not found. Please run installation first.")
@@ -160,53 +160,43 @@ def update_claude_config(
 
 
 def switch_mode(
-    target_deployment: str = None, 
+    target_deployment: str = None,
     target_mode: str = None,
     mcp_config: MCPModeConfig = None
 ):
     """Switch between development and production modes.
-    
+
     Args:
-        target_deployment: Target deployment type ("python" or "docker")
-        target_mode: Target mode ("dev" or "prod")
+        target_deployment: Target deployment type ("python" or "docker"), defaults to current
+        target_mode: Target mode ("dev" or "prod"), prompts if not specified
         mcp_config: MCP-specific configuration (defaults to Joplin MCP)
     """
     if mcp_config is None:
         mcp_config = MCPModeConfig()  # Default to Joplin MCP
-    
+
     # Detect current state
     current_deployment, current_is_dev = detect_current_deployment(mcp_config)
     current_mode = "dev" if current_is_dev else "prod"
-    
+
     print_step("Current Deployment Status")
     print_success(f"MCP Server: {mcp_config.mcp_server_name}")
     print_success(f"Deployment: {current_deployment}")
     print_success(f"Mode: {current_mode}")
-    
-    # Get target deployment and mode
+
+    # Default to current deployment if not specified
     if not target_deployment:
-        print_colored(f"\nCurrent deployment: {current_deployment}", Colors.WHITE)
-        print_colored("Switch deployment type? (requires full reinstallation)", Colors.WHITE)
-        print_colored("  1. Keep current deployment", Colors.WHITE)
-        print_colored("  2. Switch to Python" if current_deployment == "docker" else "  2. Switch to Docker", Colors.WHITE)
-        
-        choice = input(f"\n{Colors.CYAN}Enter choice (1 or 2): {Colors.END}").strip()
-        if choice == "1":
-            target_deployment = current_deployment
-        elif choice == "2":
-            other_deployment = "python" if current_deployment == "docker" else "docker"
-            print_error(f"Switching from {current_deployment} to {other_deployment} requires reinstallation.")
-            print_info("Run the installation script again")
-            sys.exit(1)
-        else:
-            print_error("Invalid choice")
-            sys.exit(1)
-    
+        target_deployment = current_deployment
+        print_colored(f"Using current deployment: {current_deployment}", Colors.WHITE)
+
+    # Track if we're in interactive mode (target_mode not specified)
+    interactive_mode = target_mode is None
+
+    # Get target mode if not specified
     if not target_mode:
         print_colored(f"\nCurrent mode: {current_mode}", Colors.WHITE)
         print_colored("  1. Development (live code changes)", Colors.WHITE)
         print_colored("  2. Production (installation-time snapshot)", Colors.WHITE)
-        
+
         choice = input(f"\n{Colors.CYAN}Enter choice (1 or 2): {Colors.END}").strip()
         if choice == "1":
             target_mode = "dev"
@@ -215,40 +205,40 @@ def switch_mode(
         else:
             print_error("Invalid choice")
             sys.exit(1)
-    
+
     target_is_dev = target_mode == "dev"
-    
+
     # Check if already in target mode
     if current_deployment == target_deployment and current_is_dev == target_is_dev:
         print_success(f"Already in {target_deployment} {target_mode} mode!")
         return
-    
-    # Confirm switch to prod if needed
-    if current_is_dev and not target_is_dev:  # dev → prod
+
+    # Confirm switch to prod if needed (only in interactive mode)
+    if current_is_dev and not target_is_dev and interactive_mode:  # dev → prod in interactive mode
         if not confirm_prod_switch():
             sys.exit(1)
-    
+
     # Find MCP config file
     mcp_config_path = None
     for path in mcp_config.config_paths:
         if path.exists():
             mcp_config_path = path
             break
-    
+
     if not mcp_config_path:
         print_error("MCP config file not found. Please run installation first.")
         sys.exit(1)
-    
+
     # Update Claude Desktop config
     print_step(f"Switching to {target_deployment} {target_mode} mode")
-    
+
     success = update_claude_config(
         mcp_config=mcp_config,
         config_path=mcp_config_path,
         deployment_type=target_deployment,
         is_development=target_is_dev
     )
-    
+
     if success:
         print_success(f"Switched to {target_deployment} {target_mode} mode!")
         print_info("Please restart Claude Desktop to apply changes.")
@@ -263,8 +253,7 @@ def main():
         description="Switch between MCP development and production modes"
     )
     parser.add_argument(
-        "mode", 
-        nargs="?",
+        "--mode",
         choices=["dev", "prod"],
         help="Target mode (dev or prod). If not specified, will prompt interactively."
     )
