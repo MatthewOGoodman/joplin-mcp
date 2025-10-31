@@ -552,6 +552,22 @@ class ChatInterface(ABC):
         # Read deployment template
         template_config = self._read_deployment_template(deployment_type, is_development)
 
+        # Python deployment: Detect absolute path to joplin-mcp-server for reliability
+        # This ensures the command works from conda/venv/any environment after reboot
+        if deployment_type == "python" and not is_development:
+            # joplin-python-installed template uses relative "joplin-mcp-server" by default
+            # Replace with absolute path for cross-platform reliability
+            cmd_path = shutil.which("joplin-mcp-server")
+            if not cmd_path:
+                # Fallback: Check in the same directory as the Python interpreter running install.py
+                fallback_path = Path(sys.executable).parent / "joplin-mcp-server"
+                if fallback_path.exists():
+                    cmd_path = str(fallback_path)
+                # else: keep the original "joplin-mcp-server" and hope it's in PATH
+
+            if cmd_path:
+                template_config["command"] = cmd_path
+
         # Get all environment variables for template substitution
         env_vars = self.get_joplin_environment_variables(config_path)
 
