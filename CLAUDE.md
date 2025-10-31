@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Current Branch**: `rebase-and-extract.docker.dev` - Working on PR resolution, upstream rebase, and Docker toolkit extraction strategy.
+
 **See also:** `@CHANGELOG_FEATURE_ADDITIONS.md` for detailed feature additions and changes made to this fork.
 
 ## Project Background & Goals
@@ -70,6 +72,113 @@ python install.py --command-args --token "your_token_here" --deployment python -
 - **Focused Contributions**: Clean joplin-mcp PR without Docker complexity
 - **Personal Utility**: Standardized development workflow across your MCP projects
 - **Potential Impact**: Could become standard MCP development toolkit
+
+### Branch Strategy and Workflow
+
+This repository maintains three distinct workflows across different branches:
+
+#### Branch Structure
+
+**1. Main Development Branch: `feature/bulk-operations-and-api-enhancements`**
+- **Purpose**: Primary development branch with ALL enhancements
+- **Contains**:
+  - 6 new MCP tools (move_note, bulk operations, search & update)
+  - Docker development infrastructure
+  - Enhanced installation system with deployment modes
+  - Configuration management system
+  - OS-aware networking fixes
+  - All feature additions and improvements
+- **Status**: This is YOUR enhanced joplin-mcp with full feature set
+- **Preservation**: Keep intact - never rebase or clean this branch
+
+**2. Clean PR Branch: `rebase/upstream-pr`**
+- **Purpose**: Minimal, focused PR for upstream contribution
+- **Based on**: `upstream/main` (alondmnt's latest)
+- **Contains**: ONLY the 6 new MCP tools, cleanly integrated
+- **Excludes**: Docker tooling, installation enhancements, config changes
+- **Strategy**:
+  - Create from fresh `upstream/main` checkout
+  - Cherry-pick or manually add only MCP tool functions
+  - Test against alondmnt's current architecture
+  - Submit as focused PR to alondmnt/joplin-mcp
+- **Benefits**: Minimal diff, easy review, high merge probability
+
+**3. Docker Extraction (Separate Repository): `MatthewOGoodman/mcp-docker-dev`**
+- **Purpose**: Extract Docker development toolkit as standalone project
+- **Method**:
+  - Fork `MatthewOGoodman/joplin-mcp` → `MatthewOGoodman/mcp-docker-dev` on GitHub
+  - Create branch `extract/mcp-docker-dev` in new fork
+  - Start with full joplin-mcp codebase (provides reference context)
+  - Strip out Joplin-specific MCP tools and logic
+  - Generalize Docker/installation infrastructure for any MCP project
+  - Keep: Templates, auto-detection, networking fixes, deployment modes
+  - Remove: Joplin API calls, note management, joplin-specific config
+- **Benefits**:
+  - Full git history available for reference during extraction
+  - Independent repository for standalone toolkit
+  - Can iterate without affecting joplin-mcp
+  - Becomes reusable across all MCP projects
+
+#### Workflow Summary
+
+```
+MatthewOGoodman/joplin-mcp
+├── feature/bulk-operations-and-api-enhancements (keep all features)
+└── rebase/upstream-pr (clean, from upstream/main + 6 tools only)
+    → PR to alondmnt/joplin-mcp
+
+MatthewOGoodman/mcp-docker-dev (forked from joplin-mcp)
+└── extract/mcp-docker-dev (strip Joplin code, keep Docker toolkit)
+    → Standalone MCP development toolkit
+```
+
+#### Execution Steps
+
+1. ✅ **Preserve main development**: Keep `feature/bulk-operations-and-api-enhancements` unchanged
+2. **Create clean PR branch**:
+   ```bash
+   git fetch upstream
+   git checkout -b rebase/upstream-pr upstream/main
+   # Add only 6 new MCP tools
+   # Test and submit PR
+   ```
+3. **Fork for extraction**: Fork joplin-mcp → mcp-docker-dev on GitHub
+4. **Extract Docker toolkit**:
+   ```bash
+   git clone https://github.com/MatthewOGoodman/mcp-docker-dev.git
+   cd mcp-docker-dev
+   git checkout -b extract/mcp-docker-dev
+   # Remove Joplin-specific code
+   # Generalize Docker/installation infrastructure
+   # Create templates and documentation
+   ```
+
+#### Why This Approach Works
+
+- ✅ **No data loss**: Main branch preserves all work
+- ✅ **Clean upstream contribution**: Minimal, focused PR
+- ✅ **Version controlled extraction**: Full history for reference
+- ✅ **Independent projects**: Each serves different purpose
+- ✅ **Easy maintenance**: Clear separation of concerns
+
+#### Final Validation
+
+Before submitting PR and publishing Docker toolkit:
+
+1. **Verify Joplin MCP functions work correctly on rebased upstream code**
+   - Test all 6 new MCP tools against alondmnt's current architecture
+   - Ensure no breaking changes from upstream updates
+   - Validate function signatures match expected API
+
+2. **Ensure Docker toolkit works independently across different MCP projects**
+   - Test extraction against minimal "hello world" MCP server
+   - Verify templates work with different project structures
+   - Validate cross-platform compatibility (macOS/Linux/Windows)
+
+3. **Submit clean Joplin MCP function PR to alondmnt's upstream**
+   - Ensure minimal diff (only 6 new tools)
+   - Include tests and documentation
+   - Follow alondmnt's contribution guidelines
 
 ### TODO: Enhanced Notebook Hierarchy Management
 
