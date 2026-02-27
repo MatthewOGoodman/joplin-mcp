@@ -218,6 +218,39 @@ Before submitting PR and publishing Docker toolkit:
 - More intuitive API for users
 - Consistent with Joplin's internal distinction between completion timestamp and completion status
 
+### TODO: Prioritized New Functionality
+
+**Tier 1: Safety and Data Protection (HIGHEST PRIORITY)**
+
+Joplin's Web Clipper API has no undo. Note revisions exist but store diffs, not snapshots. Current write operations have no backup or confirmation mechanisms.
+
+- **Auto-backup before note modification**: Before any `update_note` body change, automatically copy current note content to an "MCP Backups" notebook in Joplin. Enables easy manual recovery.
+- **`restore_note_from_backup`**: Retrieve and restore a note from its backup copy
+- **Fix `delete_note` to use soft-delete**: Joplin's API soft-deletes by default (sets `deleted_time`), but joppy's `delete_note()` may bypass this. Verify behavior and ensure trash is used by default. Add explicit `permanent` flag for intentional permanent deletion.
+- **`list_trash`**: List items in Joplin's built-in trash (notes with non-zero `deleted_time`)
+- **`restore_from_trash`**: Restore a trashed note/notebook (set `deleted_time` to 0)
+- **`get_note_history`**: Expose Joplin's revision system — list revisions for a note with timestamps
+- **`restore_note_revision`**: Reconstruct a previous note version from revision diffs (requires diff-match-patch library)
+
+**Tier 2: Organization Enhancements**
+
+- **Enhanced notebook hierarchy** (see TODO above): Add `parent_id`/`parent_notebook` to `update_notebook()` for moving notebooks between hierarchy levels
+- **`get_recent_changes`**: Expose Joplin's events API — activity feed showing recent creates/updates/deletes with timestamps
+- **`find_in_note`**: Search within a specific note (alondmnt added this upstream — consider integrating)
+- **Todo timestamp/boolean separation** (see TODO above): Split `todo_completed` into distinct timestamp and boolean parameters
+
+**Tier 3: Advanced Search**
+
+- **Document Joplin search operators** in MCP tool descriptions: `title:`, `body:`, `tag:`, `notebook:`, `created:`, `updated:`, `due:`, `type:`, `iscompleted:`, `resource:`, `sourceurl:`, `any:1` (OR), `-` (negation), `*` (wildcard)
+- **Search helper or query builder**: Assist users in constructing complex Joplin search queries
+
+**Tier 4: Resource and Attachment Management**
+
+- **`list_resources`** / **`get_note_resources`**: List attachments globally or per-note
+- **`get_resource`**: Get attachment metadata, including OCR-extracted text from images/PDFs
+- **`upload_resource`**: Attach files to notes
+- **`delete_resource`**: Remove attachments
+
 
 ## MCP Configuration Management System
 
@@ -288,8 +321,24 @@ black src/ tests/ && ruff check src/ tests/ && mypy src/
 ```
 
 ### Development Setup
+
+**Editable install** (`pip install -e .`) is used so code edits take effect on MCP server reload
+without reinstalling.
+
+**macOS permissions requirement**: `python3.13` needs **Full Disk Access** (System Settings >
+Privacy & Security > Full Disk Access). Claude Desktop spawns python as a subprocess, and macOS
+TCC permissions don't propagate from parent to child. Without this, python3.13 gets
+`[Errno 1] Operation not permitted` reading from the source tree within `~/Documents/.../joplin-mcp`. This was the cause of editable
+installs appearing "broken" — the install itself was fine, but the subprocess couldn't read the
+source tree.
+
+**Dev workflow** (edit code, reload, test — no pip install or app restart):
+1. Edit source files in `src/joplin_mcp/`
+2. In Claude Desktop: **Developer > Reload MCP Configuration**
+3. Changes are live
+
 ```bash
-# Install in development mode with dev dependencies
+# Install with dev dependencies (editable)
 pip install -e ".[dev]"
 
 # Install pre-commit hooks
@@ -363,14 +412,41 @@ This is a **FastMCP-based Model Context Protocol (MCP) server** that provides AI
 - **`src/joplin_mcp/server.py`** - Legacy server implementation
 - **`run_fastmcp_server.py`** - Server launcher supporting both STDIO and HTTP transports
 
-### Tool Categories
+### Tool Categories (27 tools)
 
-1. **Note Finding & Search** (5 tools): find_notes, find_notes_with_tag, find_notes_in_notebook, get_all_notes, get_note
-2. **Note Management** (6 tools): create_note, update_note, delete_note, get_links, move_note, strip_note_tags
-3. **Notebook Management** (4 tools): list_notebooks, create_notebook, update_notebook, delete_notebook
-4. **Tag Management** (8 tools): list_tags, create_tag, update_tag, delete_tag, get_tags_by_note, tag_note, untag_note, bulk_tag_notes
-5. **Bulk Operations** (3 tools): bulk_move_notes, search_and_bulk_update_preview, search_and_bulk_update_execute
-6. **System** (1 tool): ping_joplin
+**Read-only (12 tools):**
+- **System**: `ping_joplin`
+- **Note Retrieval**: `get_note` (smart TOC/section/line reading), `get_links` (outgoing + backlinks)
+- **Note Finding and Search**: `find_notes`, `find_notes_with_tag`, `find_notes_in_notebook`, `get_all_notes`
+- **Notebook and Tag Listing**: `list_notebooks`, `list_tags`, `get_tags_by_note`
+- **Bulk Preview**: `search_and_bulk_update_preview`
+
+**Write operations (15 tools):**
+- **Note Management**: `create_note`, `update_note` (partial field update), `delete_note` (**PERMANENT**), `move_note`
+- **Bulk Operations**: `bulk_move_notes`, `search_and_bulk_update_execute` (requires preview first), `strip_note_tags`
+- **Notebook Management**: `create_notebook`, `update_notebook` (title only), `delete_notebook` (**PERMANENT**, deletes contained notes)
+- **Tag Management**: `create_tag`, `update_tag`, `delete_tag` (**PERMANENT**), `tag_note`, `untag_note`, `bulk_tag_notes`
+
+**Safety status of write operations:**
+- `update_note`: Partial update (only specified fields change), but **no backup** before body replacement
+- `delete_note`: **Permanent deletion** — does NOT use Joplin's trash system (see Joplin API Discoveries below)
+- `delete_notebook`: **Permanent deletion** of notebook AND all contained notes
+- `search_and_bulk_update_execute`: Has preview/confirm pattern (safest write operation)
+- All other writes: No confirmation, no undo
+
+### Joplin API Discoveries (Unexposed Capabilities)
+
+The Joplin REST API and `joppy` Python library support significant capabilities not yet exposed through MCP tools:
+
+**1. Trash/Soft-Delete System** — `DELETE /notes/:id` soft-deletes by default (sets `deleted_time`). Only `DELETE /notes/:id?permanent=1` permanently deletes. Our `delete_note` may be calling permanent delete via joppy. Trashed items can be listed (`include_deleted=1`) and restored (set `deleted_time` to 0).
+
+**2. Note Revision History** — Joplin auto-saves note versions every 10 minutes, retained 90 days. Revisions stored as diffs (diff-match-patch format). `joppy` has `get_all_revisions()`, `get_revision()` etc. — completely unused. Reconstructing full content from diffs requires applying them sequentially (no direct "get version N" API — there's an open Joplin forum request for this).
+
+**3. Resource/Attachment Management** — Complete CRUD for attachments: list, get metadata, download file content, upload, delete. Also supports OCR text extraction from images/PDFs. `joppy` exposes all of these — completely unused.
+
+**4. Events/Change Tracking** — Activity feed API: recent creates/updates/deletes with timestamps, cursor-based pagination, 90-day retention. Useful for monitoring and audit trails.
+
+**5. Advanced Search Operators** — Joplin search supports operators not documented in MCP tool descriptions: `title:`, `body:`, `tag:`, `notebook:`, `created:`, `updated:`, `due:`, `type:`, `iscompleted:`, `resource:`, `sourceurl:`, `any:1` (OR logic), `-` (negation), `*` (wildcard).
 
 ### Configuration System
 
