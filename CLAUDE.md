@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a **fork of alondmnt's joplin-mcp** project, chosen for its comprehensive feature set and mature implementation. Our goals are to enhance it with:
 
 ### Fork Information
+
 - **Original Repository**: https://github.com/alondmnt/joplin-mcp
 - **Fork Point**: `d5a5daa` (docs: updated README) - Last alondmnt commit before our development branch
 - **Current alondmnt HEAD**: `762e397` (fix: update Python version requirement in classifiers)
@@ -32,7 +33,6 @@ python install.py --command-args --deployment docker --mode development
 # Python production
 python install.py --command-args --token "your_token_here" --deployment python --mode production
 ```
-
 
 ## PR Strategy and Future Development
 
@@ -200,23 +200,9 @@ Before submitting PR and publishing Docker toolkit:
 - Consistent with note movement API design
 - Enables hierarchical organization workflows
 
-### TODO: Separate Todo Timestamp vs Boolean Parameters
+### COMPLETED: Fix todo_completed Timestamp Handling
 
-**Issue**: Current parameter design conflates timestamp and boolean semantics for `todo_completed`:
-- **API Field**: `todo_completed` expects timestamp (milliseconds when completed)  
-- **Filter Logic**: `todo_completed_filter` needs boolean (completed vs incomplete)
-- **Current Problem**: Cannot do early parameter conversion without losing timestamp information
-
-**Proposed Solution**: Split into separate parameters:
-- `todo_completed_time` - timestamp for setting completion time (PUT operations)
-- `completed` - boolean for filtering/search logic (replaces `todo_completed_filter`)
-- `completed_filter` - boolean filter parameter (consistent with naming)
-
-**Benefits**:
-- Clear separation of timestamp vs boolean semantics
-- Enables early parameter conversion without data loss
-- More intuitive API for users
-- Consistent with Joplin's internal distinction between completion timestamp and completion status
+`todo_completed` now writes proper epoch-ms timestamps via `convert_todo_completed()`. Accepts `True/False` (current time), epoch milliseconds, or ISO datetime strings (`YYYY-MM-DD HH:MM`, `YYYY-MM-DD`). Auto-sets `is_todo=True` when marking complete; raises error if `is_todo=False` with truthy completion. See `markdowns/plans_completed/COMPLETED_TODOS.md` for full implementation details.
 
 ### TODO: Prioritized New Functionality
 
@@ -237,8 +223,6 @@ Joplin's Web Clipper API has no undo. Note revisions exist but store diffs, not 
 - **Enhanced notebook hierarchy** (see TODO above): Add `parent_id`/`parent_notebook` to `update_notebook()` for moving notebooks between hierarchy levels
 - **`get_recent_changes`**: Expose Joplin's events API — activity feed showing recent creates/updates/deletes with timestamps
 - **`find_in_note`**: Search within a specific note (alondmnt added this upstream — consider integrating)
-- **Todo timestamp/boolean separation** (see TODO above): Split `todo_completed` into distinct timestamp and boolean parameters
-
 **Tier 3: Advanced Search**
 
 - **Document Joplin search operators** in MCP tool descriptions: `title:`, `body:`, `tag:`, `notebook:`, `created:`, `updated:`, `due:`, `type:`, `iscompleted:`, `resource:`, `sourceurl:`, `any:1` (OR), `-` (negation), `*` (wildcard)
@@ -251,13 +235,14 @@ Joplin's Web Clipper API has no undo. Note revisions exist but store diffs, not 
 - **`upload_resource`**: Attach files to notes
 - **`delete_resource`**: Remove attachments
 
-
 ## MCP Configuration Management System
 
 ### **Overview**
+
 The `mcp-config-manager.sh` script provides seamless switching between different joplin-mcp deployment modes while preserving all MCP server configurations and handling Claude Desktop resets.
 
 ### **Available Deployment Modes**
+
 ```bash
 ./mcp-config-manager.sh docker-dev      # Development with live code changes
 ./mcp-config-manager.sh docker-prod     # Production Docker deployment  
@@ -266,6 +251,7 @@ The `mcp-config-manager.sh` script provides seamless switching between different
 ```
 
 ### **Management Commands**
+
 ```bash
 ./mcp-config-manager.sh backup          # Backup current configurations
 ./mcp-config-manager.sh restore [file]  # Restore from backup (latest if no file)
@@ -273,11 +259,13 @@ The `mcp-config-manager.sh` script provides seamless switching between different
 ```
 
 ### **Entry Point Strategy**
+
 - **Development**: `docker-dev` → `run_fastmcp_server.py` (enhanced CLI options)
 - **Package Testing**: `python-uvx` → `uvx joplin-mcp` (quick deployment validation)
 - **Production**: `docker-prod`, `python-installed` → `joplin_mcp.server` (official entry points)
 
 ### **Key Features**
+
 - **Smart Backup System**: Timestamped backups with validation (stored in `~/.mcp-config-backups/`)
 - **Token Management**: Automatic JOPLIN_TOKEN extraction from backups or environment
 - **Configuration Merging**: Preserves other MCP servers (kagi, etc.) during switches
@@ -288,6 +276,7 @@ The `mcp-config-manager.sh` script provides seamless switching between different
 ## Development Commands
 
 ### Testing
+
 ```bash
 # Run all tests
 pytest
@@ -306,6 +295,7 @@ pytest -m "not slow"
 ```
 
 ### Code Quality
+
 ```bash
 # Format code with black
 black src/ tests/
@@ -470,5 +460,3 @@ The Joplin REST API and `joppy` Python library support significant capabilities 
 - Error handling with detailed user feedback
 - Tool permissions controlled via configuration
 - Support for both development and production deployments
-
-

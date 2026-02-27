@@ -33,6 +33,7 @@
 import os
 import logging
 import datetime
+import time
 from typing import Optional, List, Dict, Any, Callable, TypeVar, Union, Annotated
 from enum import Enum
 from functools import wraps
@@ -143,6 +144,52 @@ def flexible_bool_converter(value: Union[bool, str, None]) -> Optional[bool]:
             raise ValueError("Must be a boolean value or string representation (true/false, 1/0, yes/no, on/off)")
     # Handle other truthy/falsy values
     return bool(value)
+
+def convert_todo_completed(value: Union[bool, str, int, None]) -> tuple[Optional[int], Optional[str]]:
+    """Convert todo_completed input to Joplin API epoch-ms timestamp.
+
+    Accepts: True/False, epoch milliseconds, ISO datetime string ('YYYY-MM-DD HH:MM' or 'YYYY-MM-DD').
+    Returns: (api_value, warning_message) tuple.
+    """
+    if value is None:
+        return (None, None)
+
+    # Boolean: True = now, False = not completed
+    if isinstance(value, bool):
+        return (int(time.time() * 1000) if value else 0, None)
+
+    # String: check for bool strings first, then ISO datetime
+    if isinstance(value, str):
+        value_stripped = value.strip()
+        value_lower = value_stripped.lower()
+        if value_lower in ('true', 'yes', 'on'):
+            return (int(time.time() * 1000), None)
+        if value_lower in ('false', 'no', 'off'):
+            return (0, None)
+        # Try ISO datetime parse
+        try:
+            dt = datetime.datetime.fromisoformat(value_stripped)
+            return (int(dt.timestamp() * 1000), None)
+        except ValueError:
+            raise ValueError(
+                f"Unrecognized todo_completed format: '{value}'. "
+                "Accepts: True/False, epoch milliseconds, or ISO datetime 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DD'"
+            )
+
+    # Integer: large = epoch ms passthrough, small = warn
+    if isinstance(value, (int, float)):
+        int_value = int(value)
+        if int_value == 0:
+            return (0, None)
+        if int_value >= 1_000_000_000_000:
+            return (int_value, None)
+        # Small positive int — likely a mistake
+        return (int_value, f"WARNING: todo_completed={int_value} interpreted as {int_value}ms since epoch (1970-01-01). Did you mean True?")
+
+    raise ValueError(
+        f"Invalid todo_completed type: {type(value).__name__}. "
+        "Accepts: True/False, epoch milliseconds, or ISO datetime 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DD'"
+    )
 
 def validate_joplin_id(note_id: str) -> str:
     """Validate that a string is a proper Joplin note ID (32 hex characters)."""
@@ -294,8 +341,8 @@ JOPLIN_NOTE_FIELDS = {
         'description': 'Todo status'
     },
     'todo_completed': {
-        'type_converter': flexible_bool_converter,
-        'in_common_fields': True, 
+        'type_converter': lambda x: convert_todo_completed(x)[0],
+        'in_common_fields': True,
         'description': 'Todo completion status'
     },
     'parent_id': {
@@ -1878,34 +1925,37 @@ async def create_note(
     notebook_name: Annotated[RequiredStringType, Field(description="Notebook name")], 
     body: Annotated[str, Field(description="Note content")] = "",
     is_todo: Annotated[OptionalBoolType, Field(description="Create as todo (default: False)")] = False,
-    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo as completed (default: False)")] = False
+    todo_completed: Annotated[Optional[Union[bool, str, int]], Field(description="Mark todo completed. Accepts: True/False (uses current time), epoch milliseconds (e.g. 1740700800000), or ISO datetime string 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD' (default: False)")] = False
 ) -> str:
     """Create a new note in a specified notebook in Joplin.
-    
+
     Creates a new note with the specified title, content, and properties. Uses notebook name
     for easier identification instead of requiring notebook IDs.
-    
+
     Returns:
         str: Success message with the created note's title and unique ID.
-    
+
     Examples:
         - create_note("Shopping List", "Personal Notes", "- Milk\n- Eggs", True, False) - Create uncompleted todo
         - create_note("Meeting Notes", "Work Projects", "# Meeting with Client") - Create regular note
     """
-    
+
     # Runtime validation for Jan AI compatibility while preserving functionality
     is_todo = flexible_bool_converter(is_todo)
-    todo_completed = flexible_bool_converter(todo_completed)
-    
+    todo_completed_value, todo_warning = convert_todo_completed(todo_completed)
+
     # Use helper function to get notebook ID
     parent_id = get_notebook_id_by_name(notebook_name)
-    
+
     client = get_joplin_client()
     note = client.add_note(
         title=title, body=body, parent_id=parent_id,
-        is_todo=1 if is_todo else 0, todo_completed=1 if todo_completed else 0
+        is_todo=1 if is_todo else 0, todo_completed=todo_completed_value or 0
     )
-    return format_creation_success(ItemType.note, title, str(note))
+    result = format_creation_success(ItemType.note, title, str(note))
+    if todo_warning:
+        result = f"{todo_warning}\n{result}"
+    return result
 
 @create_tool("update_note", "Update note")
 async def update_note(
@@ -1913,7 +1963,7 @@ async def update_note(
     title: Annotated[Optional[str], Field(description="New title (optional)")] = None,
     body: Annotated[Optional[str], Field(description="New content (optional)")] = None,
     is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo (optional)")] = None,
-    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed (optional)")] = None,
+    todo_completed: Annotated[Optional[Union[bool, str, int]], Field(description="Mark todo completed. Accepts: True/False (uses current time), epoch milliseconds (e.g. 1740700800000), or ISO datetime string 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD' (optional)")] = None,
     parent_id: Annotated[Optional[str], Field(description="Move to different notebook (notebook ID, optional)")] = None,
     parent_notebook: Annotated[Optional[str], Field(description="Move to different notebook (notebook name, optional)")] = None,
     author: Annotated[Optional[str], Field(description="Note author (optional)")] = None,
@@ -1926,16 +1976,16 @@ async def update_note(
     user_updated_time: Annotated[Optional[int], Field(description="Custom update timestamp in milliseconds (optional)")] = None
 ) -> str:
     """Update an existing note in Joplin.
-    
+
     Updates one or more properties of an existing note. At least one field must be provided.
     Can update content and move between notebooks in a single operation.
-    
+
     For moving notebooks: use either parent_id (notebook ID) OR parent_notebook (notebook name).
     For move-only operations: use move_note() or bulk_move_notes() for clearer intent.
-    
+
     Returns:
         str: Success message confirming the note was updated.
-    
+
     Examples:
         - update_note("note123", title="New Title") - Update only the title
         - update_note("note123", body="New content", is_todo=True) - Update content and convert to todo
@@ -1943,24 +1993,31 @@ async def update_note(
         - update_note("note123", title="Archive Note", parent_id="abc123def456") - Update title AND move using notebook ID
         - update_note("note123", latitude=40.7128, longitude=-74.0060) - Add GPS coordinates
     """
-    
+
     # Runtime validation for Jan AI compatibility while preserving functionality
     note_id = validate_joplin_id(note_id)
     is_todo = flexible_bool_converter(is_todo)
-    todo_completed = flexible_bool_converter(todo_completed)
-    
+    todo_completed_value, todo_warning = convert_todo_completed(todo_completed)
+
     # Handle parent_notebook → parent_id conversion
     if parent_notebook is not None and parent_id is not None:
         raise ValueError("Cannot specify both parent_id and parent_notebook. Use one or the other.")
-    
+
     if parent_notebook is not None:
         parent_id = get_notebook_id_by_name(parent_notebook)
-    
+
+    # Setting todo_completed requires is_todo=True. Joplin silently accepts
+    # todo_completed on non-todos but won't render a checkbox.
+    if todo_completed_value and todo_completed_value > 0:
+        if is_todo is not None and not is_todo:
+            raise ValueError("Cannot set todo_completed on a non-todo note. Remove is_todo=False or set is_todo=True.")
+        is_todo = True
+
     update_data = {}
     if title is not None: update_data["title"] = title
     if body is not None: update_data["body"] = body
     if is_todo is not None: update_data["is_todo"] = 1 if is_todo else 0
-    if todo_completed is not None: update_data["todo_completed"] = 1 if todo_completed else 0
+    if todo_completed_value is not None: update_data["todo_completed"] = todo_completed_value
     if parent_id is not None: update_data["parent_id"] = parent_id
     if author is not None: update_data["author"] = author
     if source_url is not None: update_data["source_url"] = source_url
@@ -1977,7 +2034,10 @@ async def update_note(
     client = get_joplin_client()
     converted_update_data = apply_field_converters(**update_data)
     client.modify_note(note_id, **converted_update_data)
-    return format_update_success(ItemType.note, note_id)
+    result = format_update_success(ItemType.note, note_id)
+    if todo_warning:
+        result = f"{todo_warning}\n{result}"
+    return result
 
 @create_tool("move_note", "Move note to different notebook")
 async def move_note(
@@ -2240,7 +2300,7 @@ async def search_and_bulk_update_preview(
     title: Annotated[Optional[str], Field(description="New title to simulate (optional)")] = None,
     body: Annotated[Optional[str], Field(description="New content to simulate (optional)")] = None,
     is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo to simulate (optional)")] = None,
-    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed to simulate (optional)")] = None,
+    todo_completed: Annotated[Optional[Union[bool, str, int]], Field(description="Mark todo completed to simulate. Accepts: True/False (uses current time), epoch milliseconds, or ISO datetime 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DD' (optional)")] = None,
     parent_id: Annotated[Optional[str], Field(description="Move notes to different notebook to simulate (notebook ID, optional)")] = None,
     parent_notebook: Annotated[Optional[str], Field(description="Move notes to different notebook to simulate (notebook name, optional)")] = None,
     author: Annotated[Optional[str], Field(description="Note author to simulate (optional)")] = None,
@@ -2286,9 +2346,8 @@ async def search_and_bulk_update_preview(
         - search_and_bulk_update_preview("*", task=True, preview_limit=10) - Preview 10 todos
     """
     
-    # NOTE: Cannot do early conversion with locals().update(apply_field_converters(**locals()))
-    # because we lose information if we convert todo_completed timestamp to boolean
-    # TODO: Consider separating todo_completed_time (timestamp) vs completed (boolean) parameters
+    # NOTE: todo_completed is handled by convert_todo_completed() in the registry type_converter,
+    # which preserves timestamp information. No early bool conversion needed.
     
     # Handle parent_notebook → parent_id conversion
     if parent_notebook is not None and parent_id is not None:
@@ -2452,7 +2511,7 @@ async def search_and_bulk_update_execute(
     title: Annotated[Optional[str], Field(description="New title (optional)")] = None,
     body: Annotated[Optional[str], Field(description="New content (optional)")] = None,
     is_todo: Annotated[OptionalBoolType, Field(description="Convert to/from todo (optional)")] = None,
-    todo_completed: Annotated[OptionalBoolType, Field(description="Mark todo completed (optional)")] = None,
+    todo_completed: Annotated[Optional[Union[bool, str, int]], Field(description="Mark todo completed. Accepts: True/False (uses current time), epoch milliseconds, or ISO datetime 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DD' (optional)")] = None,
     parent_id: Annotated[Optional[str], Field(description="Move notes to different notebook (notebook ID, optional)")] = None,
     parent_notebook: Annotated[Optional[str], Field(description="Move notes to different notebook (notebook name, optional)")] = None,
     author: Annotated[Optional[str], Field(description="Note author (optional)")] = None,
@@ -2493,17 +2552,18 @@ async def search_and_bulk_update_execute(
     
     # Runtime validation for Jan AI compatibility
     is_todo = flexible_bool_converter(is_todo)
-    todo_completed = flexible_bool_converter(todo_completed)
+    # Note: todo_completed is NOT converted here — the registry type_converter
+    # (convert_todo_completed) handles it during per-note update to write proper timestamps
     task = flexible_bool_converter(task)
     completed = flexible_bool_converter(completed)
-    
+
     # Handle parent_notebook → parent_id conversion
     if parent_notebook is not None and parent_id is not None:
         raise ValueError("Cannot specify both parent_id and parent_notebook. Use one or the other.")
-    
+
     if parent_notebook is not None:
         parent_id = get_notebook_id_by_name(parent_notebook)
-    
+
     # Validate conditional parameters
     is_todo_filter = flexible_bool_converter(is_todo_filter)
     todo_completed_filter = flexible_bool_converter(todo_completed_filter)
