@@ -39,6 +39,7 @@ dependencies = [
     "httpx>=0.24.0",
     "typing-extensions>=4.0.0",
     "PyYAML>=6.0.0",
+    "diff-match-patch>=20230430",
 ]
 
 [project.optional-dependencies]

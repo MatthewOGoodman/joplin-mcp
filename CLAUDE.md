@@ -210,13 +210,14 @@ Before submitting PR and publishing Docker toolkit:
 
 Joplin's Web Clipper API has no undo. Note revisions exist but store diffs, not snapshots. Current write operations have no backup or confirmation mechanisms.
 
-- **Auto-backup before note modification**: Before any `update_note` body change, automatically copy current note content to an "MCP Backups" notebook in Joplin. Enables easy manual recovery.
-- **`restore_note_from_backup`**: Retrieve and restore a note from its backup copy
-- **Fix `delete_note` to use soft-delete**: Joplin's API soft-deletes by default (sets `deleted_time`), but joppy's `delete_note()` may bypass this. Verify behavior and ensure trash is used by default. Add explicit `permanent` flag for intentional permanent deletion.
+- ~~**Auto-backup before note modification**~~: **COMPLETED** — Uses Joplin's native revision system via `POST /revisions` with diff-match-patch. Before any `update_note` or `search_and_bulk_update_execute` body overwrite, `_save_note_revision()` snapshots the current note content as a revision. Restorable from Joplin Desktop's built-in "Note History" UI (restores to "Restored Notes" notebook). Key details: JSON diff-match-patch format (patches from `""` → current content), `metadata_diff` as `{"new": {...}, "deleted": []}`, millisecond timestamps (joppy's `add_revision` has a seconds bug — bypassed with `client.post()` directly). `diff-match-patch` added as dependency.
+- ~~**`restore_note_from_backup`**~~: **NOT NEEDED** — Joplin Desktop's "Note History" UI handles restore natively. No custom MCP tool required.
+- ~~**Fix `delete_note` to use soft-delete**~~: **COMPLETED** — Verified empirically: `delete_note` and `delete_notebook` already soft-delete to trash (restorable from Joplin Desktop). `delete_tag` is permanent (tags have no trash). Updated docstrings, return messages, and safety annotations. `permanent=1` API parameter intentionally NOT exposed.
 - **`list_trash`**: List items in Joplin's built-in trash (notes with non-zero `deleted_time`)
 - **`restore_from_trash`**: Restore a trashed note/notebook (set `deleted_time` to 0)
 - **`get_note_history`**: Expose Joplin's revision system — list revisions for a note with timestamps
 - **`restore_note_revision`**: Reconstruct a previous note version from revision diffs (requires diff-match-patch library)
+- **TODO: Full database backup strategy**: The per-note revision approach protects individual edits well, but bulk operations (`search_and_bulk_update_execute`) could be painful to undo note-by-note from Joplin Desktop. Investigate exporting/backing up the full Joplin database or .md files before large-scale operations.
 
 **Tier 2: Organization Enhancements**
 
@@ -293,6 +294,8 @@ pytest -m integration
 # Run without slow tests
 pytest -m "not slow"
 ```
+
+**Joplin MCP manual testing**: Use the **"Testing"** notebook in Joplin for creating test notes, tags, and other items during MCP tool development and verification.
 
 ### Code Quality
 
@@ -412,23 +415,25 @@ This is a **FastMCP-based Model Context Protocol (MCP) server** that provides AI
 - **Bulk Preview**: `search_and_bulk_update_preview`
 
 **Write operations (15 tools):**
-- **Note Management**: `create_note`, `update_note` (partial field update), `delete_note` (**PERMANENT**), `move_note`
+- **Note Management**: `create_note`, `update_note` (partial field update), `delete_note` (soft-delete to trash), `move_note`
 - **Bulk Operations**: `bulk_move_notes`, `search_and_bulk_update_execute` (requires preview first), `strip_note_tags`
-- **Notebook Management**: `create_notebook`, `update_notebook` (title only), `delete_notebook` (**PERMANENT**, deletes contained notes)
-- **Tag Management**: `create_tag`, `update_tag`, `delete_tag` (**PERMANENT**), `tag_note`, `untag_note`, `bulk_tag_notes`
+- **Notebook Management**: `create_notebook`, `update_notebook` (title only), `delete_notebook` (soft-delete to trash, including contained notes)
+- **Tag Management**: `create_tag`, `update_tag`, `delete_tag` (**PERMANENT** — tags have no trash), `tag_note`, `untag_note`, `bulk_tag_notes`
 
 **Safety status of write operations:**
 - `update_note`: Partial update (only specified fields change), but **no backup** before body replacement
-- `delete_note`: **Permanent deletion** — does NOT use Joplin's trash system (see Joplin API Discoveries below)
-- `delete_notebook`: **Permanent deletion** of notebook AND all contained notes
+- `delete_note`: Soft-delete — moves to Joplin's trash, restorable from Joplin Desktop
+- `delete_notebook`: Soft-delete — moves notebook and contained notes to trash, restorable
+- `delete_tag`: **Permanent deletion** — tags do NOT use Joplin's trash system, cannot be restored
 - `search_and_bulk_update_execute`: Has preview/confirm pattern (safest write operation)
 - All other writes: No confirmation, no undo
+- **Note:** `permanent=1` API parameter exists but is intentionally NOT exposed — all note/notebook deletes go to trash
 
 ### Joplin API Discoveries (Unexposed Capabilities)
 
 The Joplin REST API and `joppy` Python library support significant capabilities not yet exposed through MCP tools:
 
-**1. Trash/Soft-Delete System** — `DELETE /notes/:id` soft-deletes by default (sets `deleted_time`). Only `DELETE /notes/:id?permanent=1` permanently deletes. Our `delete_note` may be calling permanent delete via joppy. Trashed items can be listed (`include_deleted=1`) and restored (set `deleted_time` to 0).
+**1. Trash/Soft-Delete System** — `DELETE /notes/:id` soft-deletes by default (sets `deleted_time`). Only `DELETE /notes/:id?permanent=1` permanently deletes. **Verified**: our `delete_note` and `delete_notebook` correctly soft-delete (no `permanent=1` passed). Tags have no trash system — `delete_tag` is permanent. Trashed items can be listed (`include_deleted=1`) and restored (set `deleted_time` to 0). `permanent=1` is intentionally NOT exposed in our MCP tools.
 
 **2. Note Revision History** — Joplin auto-saves note versions every 10 minutes, retained 90 days. Revisions stored as diffs (diff-match-patch format). `joppy` has `get_all_revisions()`, `get_revision()` etc. — completely unused. Reconstructing full content from diffs requires applying them sequentially (no direct "get version N" API — there's an open Joplin forum request for this).
 

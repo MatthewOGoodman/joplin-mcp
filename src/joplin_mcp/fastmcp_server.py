@@ -34,9 +34,12 @@ import os
 import logging
 import datetime
 import time
+import json
 from typing import Optional, List, Dict, Any, Callable, TypeVar, Union, Annotated
 from enum import Enum
 from functools import wraps
+
+import diff_match_patch as dmp_module
 
 # FastMCP imports
 from fastmcp import FastMCP, Context
@@ -45,8 +48,8 @@ from fastmcp import FastMCP, Context
 from pydantic import Field
 from typing_extensions import Annotated
 
-# Direct joppy import
 from joppy.client_api import ClientApi
+import joppy.data_types
 
 # Import our existing configuration for compatibility
 from joplin_mcp.config import JoplinMCPConfig
@@ -291,7 +294,7 @@ def build_general_search_filters(**params) -> List[str]:
     for field_name in filter_fields:
         if field_name not in special_fields:
             filter_value = converted_params.get(f"{field_name}_filter")
-            search_parts.append(f"{field_name}:{filter_value}")
+            search_parts.append(f'{field_name}:"{filter_value}"')
     
     return search_parts
 
@@ -1090,13 +1093,17 @@ ITEM_TYPE: {item_type.value}
 ITEM_ID: {item_id}
 MESSAGE: {item_type.value} updated successfully in Joplin"""
 
-def format_delete_success(item_type: ItemType, item_id: str) -> str:
+def format_delete_success(item_type: ItemType, item_id: str, soft_delete: bool = True) -> str:
     """Format a standardized success message for delete operations optimized for LLM comprehension."""
+    if soft_delete:
+        message = f"{item_type.value} moved to trash in Joplin (restorable from Joplin Desktop)"
+    else:
+        message = f"{item_type.value} deleted permanently from Joplin"
     return f"""OPERATION: DELETE_{item_type.value.upper()}
 STATUS: SUCCESS
 ITEM_TYPE: {item_type.value}
 ITEM_ID: {item_id}
-MESSAGE: {item_type.value} deleted successfully from Joplin"""
+MESSAGE: {message}"""
 
 def format_relation_success(operation: str, item1_type: ItemType, item1_id: str, item2_type: ItemType, item2_id: str) -> str:
     """Format a standardized success message for relationship operations optimized for LLM comprehension."""
@@ -2032,6 +2039,11 @@ async def update_note(
         raise ValueError("At least one field must be provided for update")
     
     client = get_joplin_client()
+
+    # Save revision before destructive content changes (title/body overwrite)
+    if body is not None or title is not None:
+        _save_note_revision(client, note_id)
+
     converted_update_data = apply_field_converters(**update_data)
     client.modify_note(note_id, **converted_update_data)
     result = format_update_success(ItemType.note, note_id)
@@ -2288,6 +2300,69 @@ def extract_note_ids_from_result(formatted_result: str, limit: int) -> List[str]
             note_ids.append(match.group(1))
     
     return note_ids
+
+
+# diff-match-patch instance for revision creation
+_dmp = dmp_module.diff_match_patch()
+
+
+def _save_note_revision(client: ClientApi, note_id: str) -> Optional[str]:
+    """Save current note content as a Joplin revision before overwriting.
+
+    Creates a revision snapshot using Joplin's native revision system.
+    Uses client.add_revision() with corrected millisecond timestamps
+    (joppy bug: uses seconds internally — our kwargs override via **data).
+
+    Args:
+        client: Configured joppy ClientApi instance
+        note_id: ID of the note to snapshot
+
+    Returns:
+        Revision ID string on success, None on failure (logs warning)
+    """
+    try:
+        note = client.get_note(note_id, fields="id,parent_id,title,body,is_todo,todo_completed")
+
+        title = getattr(note, 'title', '') or ''
+        body = getattr(note, 'body', '') or ''
+        parent_id = getattr(note, 'parent_id', '') or ''
+        is_todo = getattr(note, 'is_todo', 0) or 0
+        todo_completed = getattr(note, 'todo_completed', 0) or 0
+
+        # Diffs from empty string to current content (same as Joplin's createNoteRevision_)
+        title_diff = _dmp.patch_toText(_dmp.patch_make('', title))
+        body_diff = _dmp.patch_toText(_dmp.patch_make('', body))
+
+        metadata_diff = json.dumps({
+            "new": {
+                "id": note_id,
+                "parent_id": parent_id,
+                "is_todo": is_todo,
+                "todo_completed": todo_completed,
+                "title": title,
+            },
+            "deleted": []
+        })
+
+        now_ms = int(time.time() * 1000)
+
+        rev_id = client.add_revision(
+            item_id=note_id,
+            item_type=joppy.data_types.ItemType.NOTE,
+            # Override joppy's buggy seconds timestamps with correct milliseconds
+            item_updated_time=now_ms,
+            item_created_time=now_ms,
+            title_diff=title_diff,
+            body_diff=body_diff,
+            metadata_diff=metadata_diff,
+        )
+        logger.info(f"Saved revision {rev_id} for note {note_id} before update")
+        return rev_id
+
+    except Exception as e:
+        logger.warning(f"Failed to save revision for note {note_id}: {e}")
+        return None
+
 
 @create_tool("search_and_bulk_update_preview", "Search and bulk update preview")
 async def search_and_bulk_update_preview(
@@ -2640,6 +2715,9 @@ async def search_and_bulk_update_execute(
             
             # Only update if some fields passed conditions
             if update_data:
+                # Save revision before destructive content changes (title/body)
+                if 'body' in update_data or 'title' in update_data:
+                    _save_note_revision(client, note_id)
                 client.modify_note(note_id, **update_data)
                 success_count += 1
             else:
@@ -2676,19 +2754,19 @@ async def search_and_bulk_update_execute(
 async def delete_note(
     note_id: Annotated[JoplinIdType, Field(description="Note ID to delete")]
 ) -> str:
-    """Delete a note from Joplin.
-    
-    Permanently removes a note from Joplin. This action cannot be undone.
-    
+    """Delete a note from Joplin (moves to trash).
+
+    Moves a note to Joplin's trash. The note can be restored from trash in Joplin Desktop.
+
     Returns:
-        str: Success message confirming the note was deleted.
-    
-    Warning: This action is permanent and cannot be undone.
+        str: Success message confirming the note was moved to trash.
     """
     # Runtime validation for Jan AI compatibility while preserving functionality
     note_id = validate_joplin_id(note_id)
-    
+
     client = get_joplin_client()
+    # NOTE: joppy's delete_note() accepts permanent=1 via **query kwargs to bypass trash.
+    # We intentionally do NOT expose that capability — all deletes go to trash for safety.
     client.delete_note(note_id)
     return format_delete_success(ItemType.note, note_id)
 
@@ -2834,7 +2912,7 @@ async def find_notes_with_tag(
     """
     
     # Build search query with tag and filters
-    search_parts = [f"tag:{tag_name}"]
+    search_parts = [f'tag:"{tag_name}"']
     search_parts.extend(build_search_filters(task, completed))
     search_query = " ".join(search_parts)
     
@@ -2880,7 +2958,7 @@ async def find_notes_in_notebook(
     """
     
     # Build search query with notebook and filters
-    search_parts = [f"notebook:{notebook_name}"]
+    search_parts = [f'notebook:"{notebook_name}"']
     search_parts.extend(build_search_filters(task, completed))
     search_query = " ".join(search_parts)
     
@@ -2967,16 +3045,17 @@ async def update_notebook(
 async def delete_notebook(
     notebook_id: Annotated[JoplinIdType, Field(description="Notebook ID to delete")]
 ) -> str:
-    """Delete a notebook from Joplin.
-    
-    Permanently removes a notebook from Joplin. This action cannot be undone.
-    
+    """Delete a notebook from Joplin (moves to trash).
+
+    Moves a notebook and its contained notes to Joplin's trash.
+    Can be restored from trash in Joplin Desktop.
+
     Returns:
-        str: Success message confirming the notebook was deleted.
-    
-    Warning: This action is permanent and cannot be undone. All notes in the notebook will also be deleted.
+        str: Success message confirming the notebook was moved to trash.
     """
     client = get_joplin_client()
+    # NOTE: joppy's delete_notebook() accepts permanent=1 via **query kwargs to bypass trash.
+    # We intentionally do NOT expose that capability — all deletes go to trash for safety.
     client.delete_notebook(notebook_id)
     return format_delete_success(ItemType.notebook, notebook_id)
 
@@ -3043,19 +3122,20 @@ async def update_tag(
 async def delete_tag(
     tag_id: Annotated[JoplinIdType, Field(description="Tag ID to delete")]
 ) -> str:
-    """Delete a tag from Joplin.
-    
-    Permanently removes a tag from Joplin. This action cannot be undone.
+    """Delete a tag from Joplin (PERMANENT).
+
+    Permanently removes a tag from Joplin. Unlike notes and notebooks, tags do NOT go to trash.
     The tag will be removed from all notes that currently have it.
-    
+
     Returns:
-        str: Success message confirming the tag was deleted.
-    
-    Warning: This action is permanent and cannot be undone. The tag will be removed from all notes.
+        str: Success message confirming the tag was permanently deleted.
+
+    Warning: This action is permanent and cannot be undone.
     """
     client = get_joplin_client()
+    # Tags do not use Joplin's trash system — deletion is permanent
     client.delete_tag(tag_id)
-    return format_delete_success(ItemType.tag, tag_id)
+    return format_delete_success(ItemType.tag, tag_id, soft_delete=False)
 
 
 @create_tool("get_tags_by_note", "Get tags by note")
