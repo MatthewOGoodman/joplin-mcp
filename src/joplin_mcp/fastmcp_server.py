@@ -2948,28 +2948,11 @@ async def get_note_history(
         parent_id = getattr(rev, 'parent_id', '') or ''
 
         # Extract title from title_diff by applying patch to empty string
-        # Handles both legacy format (from patch_toText, starts with @@)
-        # and JSON format (from Joplin Desktop, starts with [)
         rev_title = None
         title_diff = getattr(rev, 'title_diff', '') or ''
-        if title_diff:
+        if title_diff and title_diff != '[]':
             try:
-                if title_diff.startswith('['):
-                    # JSON format: reconstruct patches from serialized dicts
-                    patch_dicts = json.loads(title_diff)
-                    patches = []
-                    for pd in patch_dicts:
-                        p = _PatchObj()
-                        p.diffs = [tuple(d) for d in pd['diffs']]
-                        p.start1 = pd['start1']
-                        p.start2 = pd['start2']
-                        p.length1 = pd['length1']
-                        p.length2 = pd['length2']
-                        patches.append(p)
-                else:
-                    # Legacy format (starts with @@)
-                    patches = _dmp.patch_fromText(title_diff)
-                patched, _ = _dmp.patch_apply(patches, '')
+                patched = _apply_diff(title_diff, '')
                 if patched:
                     rev_title = patched
             except Exception:
@@ -2995,6 +2978,171 @@ async def get_note_history(
             lines.append(f"  parent_id: {parent_id}")
 
     return "\n".join(lines)
+
+
+def _apply_diff(diff_text: str, base: str) -> str:
+    """Apply a diff-match-patch diff to a base string.
+
+    Handles both Joplin's JSON format (starts with '[') and legacy format (starts with '@@').
+
+    Args:
+        diff_text: The diff string in either JSON or legacy format
+        base: The base string to apply the diff to
+
+    Returns:
+        The patched string result
+
+    Raises:
+        ValueError: If diff cannot be parsed or applied
+    """
+    if not diff_text or diff_text == '[]':
+        return base
+
+    if diff_text.startswith('['):
+        # JSON format
+        patch_dicts = json.loads(diff_text)
+        patches = []
+        for pd in patch_dicts:
+            p = _PatchObj()
+            p.diffs = [tuple(d) for d in pd['diffs']]
+            p.start1 = pd['start1']
+            p.start2 = pd['start2']
+            p.length1 = pd['length1']
+            p.length2 = pd['length2']
+            patches.append(p)
+    else:
+        # Legacy format (starts with @@)
+        patches = _dmp.patch_fromText(diff_text)
+
+    patched, results = _dmp.patch_apply(patches, base)
+    if not all(results):
+        failed = sum(1 for r in results if not r)
+        logger.warning(f"Patch application had {failed} failed hunks out of {len(results)}")
+    return patched
+
+
+def _reconstruct_revision_content(client: ClientApi, revision_id: str) -> dict:
+    """Reconstruct full note content from a revision by walking the parent chain.
+
+    Follows parent_id links back to the first revision, then applies diffs
+    sequentially to reconstruct title, body, and metadata.
+
+    Args:
+        client: Configured joppy ClientApi instance
+        revision_id: ID of the revision to reconstruct
+
+    Returns:
+        dict with keys: 'title', 'body', 'metadata' (parsed metadata_diff)
+    """
+    # Collect the chain from target revision back to root
+    chain = []
+    current_id = revision_id
+
+    while current_id:
+        rev = client.get_revision(current_id, fields="id,parent_id,title_diff,body_diff,metadata_diff")
+        chain.append(rev)
+        current_id = getattr(rev, 'parent_id', '') or ''
+
+    # Apply diffs from root (last in chain) forward to target (first in chain)
+    chain.reverse()
+
+    title = ''
+    body = ''
+    metadata = {}
+
+    for rev in chain:
+        title_diff = getattr(rev, 'title_diff', '') or ''
+        body_diff = getattr(rev, 'body_diff', '') or ''
+        metadata_diff_str = getattr(rev, 'metadata_diff', '') or ''
+
+        if title_diff and title_diff != '[]':
+            title = _apply_diff(title_diff, title)
+        if body_diff and body_diff != '[]':
+            body = _apply_diff(body_diff, body)
+        if metadata_diff_str:
+            try:
+                md = json.loads(metadata_diff_str)
+                # Apply "new" fields, remove "deleted" fields
+                metadata.update(md.get('new', {}))
+                for key in md.get('deleted', []):
+                    metadata.pop(key, None)
+            except Exception:
+                pass
+
+    return {'title': title, 'body': body, 'metadata': metadata}
+
+
+@create_tool("restore_note_revision", "Restore a note from revision history")
+async def restore_note_revision(
+    revision_id: Annotated[str, Field(description="Revision ID to restore (from get_note_history)")],
+    target_notebook: Annotated[Optional[str], Field(description="Notebook name for restored note (default: original notebook, or 'Restored Notes' if unavailable)")] = None
+) -> str:
+    """Restore a previous version of a note from its revision history.
+
+    Reconstructs the note content from revision diffs and creates a NEW note
+    with the restored content (same behavior as Joplin Desktop's restore).
+    Does not overwrite the current version of the note.
+
+    Use get_note_history first to find the revision_id to restore.
+
+    Returns:
+        str: Success message with the restored note's ID and location.
+    """
+    client = get_joplin_client()
+
+    # Reconstruct content from revision chain
+    try:
+        content = _reconstruct_revision_content(client, revision_id)
+    except Exception as e:
+        raise ValueError(f"Failed to reconstruct revision: {e}")
+
+    title = content['title'] or 'Untitled (restored)'
+    body = content['body'] or ''
+    metadata = content['metadata']
+
+    # Determine target notebook
+    target_notebook_id = None
+    if target_notebook:
+        target_notebook_id = get_notebook_id_by_name(target_notebook)
+    elif metadata.get('parent_id'):
+        # Try original notebook
+        try:
+            nb = client.get_notebook(metadata['parent_id'], fields="id,title,deleted_time")
+            # Check notebook isn't trashed
+            deleted = getattr(nb, 'deleted_time', None)
+            import datetime as dt_module
+            if deleted and deleted != dt_module.datetime(1970, 1, 1, 0, 0):
+                target_notebook_id = None  # Original notebook is trashed
+            else:
+                target_notebook_id = metadata['parent_id']
+        except Exception:
+            target_notebook_id = None
+
+    # Fall back to "Restored Notes" notebook (create if needed)
+    if not target_notebook_id:
+        try:
+            target_notebook_id = get_notebook_id_by_name("Restored Notes")
+        except ValueError:
+            nb = client.add_notebook(title="Restored Notes")
+            target_notebook_id = str(nb)
+
+    # Create the restored note
+    note_id = str(client.add_note(title=title, body=body, parent_id=target_notebook_id))
+
+    # Get target notebook name for display
+    try:
+        nb = client.get_notebook(target_notebook_id, fields="id,title")
+        nb_name = getattr(nb, 'title', target_notebook_id)
+    except Exception:
+        nb_name = target_notebook_id
+
+    return f"""OPERATION: RESTORE_NOTE_REVISION
+STATUS: SUCCESS
+RESTORED_NOTE_ID: {note_id}
+TITLE: {title}
+NOTEBOOK: {nb_name}
+SOURCE_REVISION: {revision_id}
+MESSAGE: Note restored from revision history as a new note in "{nb_name}" """
 
 @create_tool("find_notes", "Find notes")
 async def find_notes(
