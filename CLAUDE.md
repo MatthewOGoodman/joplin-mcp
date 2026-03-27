@@ -215,14 +215,14 @@ Before submitting PR and publishing Docker toolkit:
 Joplin's Web Clipper API has no undo. Note revisions exist but store diffs, not snapshots. Current write operations have no backup or confirmation mechanisms.
 
 - ~~**Auto-backup before note modification**~~: **COMPLETED** — Uses Joplin's native revision system via `POST /revisions` with diff-match-patch. Before any `update_note` or `search_and_bulk_update_execute` body overwrite, `_save_note_revision()` snapshots the current note content as a revision. Restorable from Joplin Desktop's built-in "Note History" UI (restores to "Restored Notes" notebook). Key details: JSON diff-match-patch format (patches from `""` → current content), `metadata_diff` as `{"new": {...}, "deleted": []}`, millisecond timestamps (joppy's `add_revision` has a seconds bug — bypassed with `client.post()` directly). `diff-match-patch` added as dependency.
-- **TODO: Fix `_save_note_revision()` to use sequential diffs**: Currently always diffs from `""` → full content. Should match Joplin's `RevisionService.createNoteRevision_` algorithm: check for latest parent revision, if exists merge its diffs and create sequential diff, set `parent_id`. Only use `""` diff for first revision of a note. Current approach creates orphan "first revisions" that break Joplin's revision chain. Algorithm is in `laurent22/joplin` `packages/lib/services/RevisionService.ts`. Not exposed via REST API — must be ported to Python.
-- **`manually_backup_note`**: Expose `_save_note_revision()` as an MCP tool for user-triggered snapshots before risky manual edits
-- ~~**`restore_note_from_backup`**~~: **NOT NEEDED** — Joplin Desktop's "Note History" UI handles restore natively. No custom MCP tool required.
+- ~~**Fix `_save_note_revision()` to use sequential diffs**~~: **COMPLETED** — Now matches Joplin's `createNoteRevision_` algorithm: checks for latest parent revision, reconstructs previous state, creates sequential diff with `parent_id`. Only diffs from `""` for first revision of a note.
+- ~~**`manually_backup_note`**~~: **COMPLETED** — Exposed `_save_note_revision()` as MCP tool for user-triggered snapshots before risky manual edits
+- ~~**`restore_note_from_backup`**~~: **COMPLETED** — Implemented as `restore_note_revision` MCP tool (programmatic restore from revision diffs). Also available via Joplin Desktop's "Note History" UI.
 - ~~**Fix `delete_note` to use soft-delete**~~: **COMPLETED** — Verified empirically: `delete_note` and `delete_notebook` already soft-delete to trash (restorable from Joplin Desktop). `delete_tag` is permanent (tags have no trash). Updated docstrings, return messages, and safety annotations. `permanent=1` API parameter intentionally NOT exposed.
-- **`list_trash`**: List items in Joplin's built-in trash (notes with non-zero `deleted_time`)
-- **`restore_from_trash`**: Restore a trashed note/notebook (set `deleted_time` to 0). Edge case to test: what happens when the original notebook was also trashed?
-- **`get_note_history`**: Expose Joplin's revision system — list revisions for a note with timestamps. Prerequisite for `restore_note_revision`.
-- **`restore_note_revision`**: Reconstruct a previous note version from revision diffs. Requires applying diffs sequentially using diff-match-patch, following Joplin's chain via `parent_id` and timestamp ordering. Once `_save_note_revision()` is fixed to use sequential diffs, our revisions integrate cleanly into the chain.
+- ~~**`list_trash`**~~: **COMPLETED** — Lists soft-deleted notes/notebooks with deletion date and original notebook name
+- ~~**`restore_from_trash`**~~: **COMPLETED** — Restores trashed note/notebook by setting `deleted_time` to 0. If original notebook was also trashed, restores to it (restore notebook first for visibility)
+- ~~**`get_note_history`**~~: **COMPLETED** — Lists revisions for a note with timestamps, titles (extracted from both JSON and legacy diff formats), and parent chain info
+- ~~**`restore_note_revision`**~~: **COMPLETED** — Reconstructs note content by walking the revision parent chain and applying diffs sequentially. Creates a new note with restored content (same as Joplin Desktop behavior). Supports both Joplin auto-saved and MCP-created revisions.
 - **TODO: Full database backup strategy**: The per-note revision approach protects individual edits well, but bulk operations (`search_and_bulk_update_execute`) could be painful to undo note-by-note from Joplin Desktop. Investigate exporting/backing up the full Joplin database or .md files before large-scale operations.
 
 **Tier 2: Organization Enhancements**
@@ -411,7 +411,7 @@ This is a **FastMCP-based Model Context Protocol (MCP) server** that provides AI
 - **`src/joplin_mcp/server.py`** - Legacy server implementation
 - **`run_fastmcp_server.py`** - Server launcher supporting both STDIO and HTTP transports
 
-### Tool Categories (29 tools)
+### Tool Categories (32 tools)
 
 **Read-only (13 tools):**
 - **System**: `ping_joplin`
@@ -420,13 +420,15 @@ This is a **FastMCP-based Model Context Protocol (MCP) server** that provides AI
 - **Notebook and Tag Listing**: `list_notebooks`, `list_tags`, `get_tags_by_note`
 - **Bulk Preview**: `search_and_bulk_update_preview`
 - **Trash**: `list_trash` (list soft-deleted notes/notebooks)
+- **History**: `get_note_history` (list revisions for a note)
 
 **Write operations (16 tools):**
 - **Note Management**: `create_note`, `update_note` (partial field update), `delete_note` (soft-delete to trash), `move_note`
 - **Bulk Operations**: `bulk_move_notes`, `search_and_bulk_update_execute` (requires preview first), `strip_note_tags`
-- **Trash Recovery**: `restore_from_trash` (restore soft-deleted note or notebook)
 - **Notebook Management**: `create_notebook`, `update_notebook` (title only), `delete_notebook` (soft-delete to trash, including contained notes)
 - **Tag Management**: `create_tag`, `update_tag`, `delete_tag` (**PERMANENT** — tags have no trash), `tag_note`, `untag_note`, `bulk_tag_notes`
+- **Trash Recovery**: `restore_from_trash` (restore soft-deleted note or notebook)
+- **Revision Recovery**: `restore_note_revision` (reconstruct note from revision diffs), `manually_backup_note` (create on-demand revision snapshot)
 
 **Safety status of write operations:**
 - `update_note`: Partial update (only specified fields change), auto-backup revision before title/body overwrite

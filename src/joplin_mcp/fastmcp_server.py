@@ -2311,6 +2311,11 @@ def _save_note_revision(client: ClientApi, note_id: str) -> Optional[str]:
     """Save current note content as a Joplin revision before overwriting.
 
     Creates a revision snapshot using Joplin's native revision system.
+    Follows Joplin's createNoteRevision_ algorithm:
+    - If prior revisions exist: reconstructs previous state, diffs sequentially,
+      sets parent_id to chain with existing revisions
+    - If no prior revisions: diffs from empty string (first revision)
+
     Uses client.add_revision() with corrected millisecond timestamps
     (joppy bug: uses seconds internally — our kwargs override via **data).
 
@@ -2326,38 +2331,64 @@ def _save_note_revision(client: ClientApi, note_id: str) -> Optional[str]:
 
         title = getattr(note, 'title', '') or ''
         body = getattr(note, 'body', '') or ''
-        parent_id = getattr(note, 'parent_id', '') or ''
+        notebook_id = getattr(note, 'parent_id', '') or ''
         is_todo = getattr(note, 'is_todo', 0) or 0
         todo_completed = getattr(note, 'todo_completed', 0) or 0
 
-        # Diffs from empty string to current content (same as Joplin's createNoteRevision_)
-        title_diff = _dmp.patch_toText(_dmp.patch_make('', title))
-        body_diff = _dmp.patch_toText(_dmp.patch_make('', body))
+        # Find the latest existing revision for this note
+        prev_title = ''
+        prev_body = ''
+        parent_rev_id = ''
 
+        try:
+            all_revs = client.get_all_revisions(fields="id,item_id,created_time")
+            note_revs = [r for r in all_revs if getattr(r, 'item_id', '') == note_id]
+            if note_revs:
+                note_revs.sort(key=lambda r: getattr(r, 'created_time', 0), reverse=True)
+                latest_rev = note_revs[0]
+                parent_rev_id = latest_rev.id
+                # Reconstruct previous state from the revision chain
+                prev_content = _reconstruct_revision_content(client, parent_rev_id)
+                prev_title = prev_content['title']
+                prev_body = prev_content['body']
+        except Exception as e:
+            logger.debug(f"Could not find parent revision for note {note_id}: {e}")
+
+        # Create diffs from previous state to current content
+        title_diff = _dmp.patch_toText(_dmp.patch_make(prev_title, title))
+        body_diff = _dmp.patch_toText(_dmp.patch_make(prev_body, body))
+
+        # Build metadata_diff: track what changed from previous metadata
+        new_metadata = {
+            "id": note_id,
+            "parent_id": notebook_id,
+            "is_todo": is_todo,
+            "todo_completed": todo_completed,
+            "title": title,
+        }
         metadata_diff = json.dumps({
-            "new": {
-                "id": note_id,
-                "parent_id": parent_id,
-                "is_todo": is_todo,
-                "todo_completed": todo_completed,
-                "title": title,
-            },
+            "new": new_metadata,
             "deleted": []
         })
 
         now_ms = int(time.time() * 1000)
 
+        revision_data = {
+            "item_updated_time": now_ms,
+            "item_created_time": now_ms,
+            "title_diff": title_diff,
+            "body_diff": body_diff,
+            "metadata_diff": metadata_diff,
+        }
+        if parent_rev_id:
+            revision_data["parent_id"] = parent_rev_id
+
         rev_id = client.add_revision(
             item_id=note_id,
             item_type=joppy.data_types.ItemType.NOTE,
-            # Override joppy's buggy seconds timestamps with correct milliseconds
-            item_updated_time=now_ms,
-            item_created_time=now_ms,
-            title_diff=title_diff,
-            body_diff=body_diff,
-            metadata_diff=metadata_diff,
+            **revision_data,
         )
-        logger.info(f"Saved revision {rev_id} for note {note_id} before update")
+        logger.info(f"Saved revision {rev_id} for note {note_id} (parent: {parent_rev_id or 'none'})")
         return rev_id
 
     except Exception as e:
@@ -3143,6 +3174,38 @@ TITLE: {title}
 NOTEBOOK: {nb_name}
 SOURCE_REVISION: {revision_id}
 MESSAGE: Note restored from revision history as a new note in "{nb_name}" """
+
+@create_tool("manually_backup_note", "Create manual revision backup")
+async def manually_backup_note(
+    note_id: Annotated[JoplinIdType, Field(description="Note ID to backup")]
+) -> str:
+    """Create a manual revision snapshot of a note's current content.
+
+    Saves the note's current title and body as a Joplin revision, enabling
+    recovery via get_note_history + restore_note_revision or Joplin Desktop's
+    "Note History" UI. Use before risky manual edits or bulk operations.
+
+    Note: Revisions are also created automatically before title/body overwrites
+    by update_note and search_and_bulk_update_execute.
+
+    Returns:
+        str: Success message with the revision ID.
+    """
+    note_id = validate_joplin_id(note_id)
+    client = get_joplin_client()
+
+    rev_id = _save_note_revision(client, note_id)
+    if rev_id:
+        return f"""OPERATION: MANUALLY_BACKUP_NOTE
+STATUS: SUCCESS
+NOTE_ID: {note_id}
+REVISION_ID: {rev_id}
+MESSAGE: Revision snapshot created. Recoverable via get_note_history + restore_note_revision or Joplin Desktop's Note History."""
+    else:
+        return f"""OPERATION: MANUALLY_BACKUP_NOTE
+STATUS: FAILED
+NOTE_ID: {note_id}
+MESSAGE: Failed to create revision snapshot. Check server logs for details."""
 
 @create_tool("find_notes", "Find notes")
 async def find_notes(
