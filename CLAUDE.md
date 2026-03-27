@@ -223,7 +223,7 @@ Joplin's Web Clipper API has no undo. Note revisions exist but store diffs, not 
 - ~~**`restore_from_trash`**~~: **COMPLETED** — Restores trashed note/notebook by setting `deleted_time` to 0. If original notebook was also trashed, restores to it (restore notebook first for visibility)
 - ~~**`get_note_history`**~~: **COMPLETED** — Lists revisions for a note with timestamps, titles (extracted from both JSON and legacy diff formats), and parent chain info
 - ~~**`restore_note_revision`**~~: **COMPLETED** — Reconstructs note content by walking the revision parent chain and applying diffs sequentially. Creates a new note with restored content (same as Joplin Desktop behavior). Supports both Joplin auto-saved and MCP-created revisions.
-- **TODO: Full database backup strategy**: The per-note revision approach protects individual edits well, but bulk operations (`search_and_bulk_update_execute`) could be painful to undo note-by-note from Joplin Desktop. Investigate exporting/backing up the full Joplin database or .md files before large-scale operations.
+- ~~**Full database backup strategy**~~: **COMPLETED** — `backup_database` MCP tool creates SQLite snapshots via `sqlite3 .backup` (~98MB, <1s). Auto-triggered before `search_and_bulk_update_execute` and `bulk_move_notes` with once-per-day guard. Manual tool bypasses guard. Backups stored in `~/JoplinBackup/default/mcp-backups/`, last 10 retained. Restore: copy backup over `~/.config/joplin-desktop/database.sqlite` while Joplin Desktop is closed.
 
 **Tier 2: Organization Enhancements**
 
@@ -411,7 +411,7 @@ This is a **FastMCP-based Model Context Protocol (MCP) server** that provides AI
 - **`src/joplin_mcp/server.py`** - Legacy server implementation
 - **`run_fastmcp_server.py`** - Server launcher supporting both STDIO and HTTP transports
 
-### Tool Categories (32 tools)
+### Tool Categories (33 tools)
 
 **Read-only (13 tools):**
 - **System**: `ping_joplin`
