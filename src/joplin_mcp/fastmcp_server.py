@@ -2302,8 +2302,9 @@ def extract_note_ids_from_result(formatted_result: str, limit: int) -> List[str]
     return note_ids
 
 
-# diff-match-patch instance for revision creation
+# diff-match-patch instance and patch class for revision creation/reading
 _dmp = dmp_module.diff_match_patch()
+_PatchObj = type(_dmp.patch_make('', 'x')[0])  # diff_match_patch.patch_obj
 
 
 def _save_note_revision(client: ClientApi, note_id: str) -> Optional[str]:
@@ -2898,6 +2899,102 @@ ITEM_ID: {item_id}
 MESSAGE: Notebook restored from trash"""
     else:
         raise ValueError(f"item_type must be 'note' or 'notebook', got '{item_type}'")
+
+@create_tool("get_note_history", "Get note revision history")
+async def get_note_history(
+    note_id: Annotated[JoplinIdType, Field(description="Note ID to get revision history for")]
+) -> str:
+    """List all saved revisions for a specific note.
+
+    Shows the revision history with timestamps, enabling recovery of previous
+    versions via Joplin Desktop's "Note History" UI or restore_note_revision.
+    Revisions are created automatically by Joplin Desktop (every 10 minutes)
+    and by MCP's auto-backup before title/body overwrites.
+
+    Returns:
+        str: List of revisions with timestamps, titles, and chain information.
+    """
+    note_id = validate_joplin_id(note_id)
+    client = get_joplin_client()
+
+    # Get all revisions and filter to this note
+    all_revs = client.get_all_revisions(
+        fields="id,item_id,item_type,item_updated_time,parent_id,created_time,title_diff,metadata_diff"
+    )
+    note_revs = [r for r in all_revs if getattr(r, 'item_id', '') == note_id]
+
+    if not note_revs:
+        return f"NOTE_ID: {note_id}\nREVISIONS: 0\nSTATUS: No revision history found for this note"
+
+    # Sort by created_time, most recent first
+    note_revs.sort(key=lambda r: getattr(r, 'created_time', 0), reverse=True)
+
+    # Try to get current note title for context
+    try:
+        note = client.get_note(note_id, fields="id,title")
+        current_title = getattr(note, 'title', 'Unknown')
+    except Exception:
+        current_title = "Unknown (note may be deleted)"
+
+    lines = [
+        f"NOTE_ID: {note_id}",
+        f"CURRENT_TITLE: {current_title}",
+        f"REVISIONS: {len(note_revs)}",
+        ""
+    ]
+
+    for i, rev in enumerate(note_revs, 1):
+        rev_time = format_timestamp(getattr(rev, 'created_time', None))
+        parent_id = getattr(rev, 'parent_id', '') or ''
+
+        # Extract title from title_diff by applying patch to empty string
+        # Handles both legacy format (from patch_toText, starts with @@)
+        # and JSON format (from Joplin Desktop, starts with [)
+        rev_title = None
+        title_diff = getattr(rev, 'title_diff', '') or ''
+        if title_diff:
+            try:
+                if title_diff.startswith('['):
+                    # JSON format: reconstruct patches from serialized dicts
+                    patch_dicts = json.loads(title_diff)
+                    patches = []
+                    for pd in patch_dicts:
+                        p = _PatchObj()
+                        p.diffs = [tuple(d) for d in pd['diffs']]
+                        p.start1 = pd['start1']
+                        p.start2 = pd['start2']
+                        p.length1 = pd['length1']
+                        p.length2 = pd['length2']
+                        patches.append(p)
+                else:
+                    # Legacy format (starts with @@)
+                    patches = _dmp.patch_fromText(title_diff)
+                patched, _ = _dmp.patch_apply(patches, '')
+                if patched:
+                    rev_title = patched
+            except Exception:
+                pass
+
+        # Fall back to metadata_diff for title
+        if not rev_title:
+            metadata_diff = getattr(rev, 'metadata_diff', '') or ''
+            if metadata_diff:
+                try:
+                    md = json.loads(metadata_diff)
+                    rev_title = md.get('new', {}).get('title', None)
+                except Exception:
+                    pass
+
+        lines.append(f"REVISION_{i}:")
+        lines.append(f"  revision_id: {rev.id}")
+        lines.append(f"  created: {rev_time}")
+        if rev_title:
+            lines.append(f"  title: {rev_title}")
+        lines.append(f"  has_parent: {'yes' if parent_id else 'no (first revision)'}")
+        if parent_id:
+            lines.append(f"  parent_id: {parent_id}")
+
+    return "\n".join(lines)
 
 @create_tool("find_notes", "Find notes")
 async def find_notes(
