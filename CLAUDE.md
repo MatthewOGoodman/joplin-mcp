@@ -94,6 +94,22 @@ Where our additions go:
 
 **Current `upstream/main` HEAD**: `1a7f40e` (v0.7.1, fetched 2026-03-28)
 
+**PR Principles:**
+1. Adds our unique contributions (bulk ops, revisions, trash, backup)
+2. Follows alondmnt's architecture, conventions, and patterns (his modular structure, his formatting helpers, his tool registration, his naming)
+3. Doesn't duplicate or override things he's already solved (search quoting, `edit_note`, `find_in_note`, delete safety)
+4. Minimizes diff surface — only add what's new, don't change what works
+
+**PR Scope — all features we've developed:**
+- 6 bulk operation tools: `move_note`, `bulk_move_notes`, `bulk_tag_notes`, `strip_note_tags`, `search_and_bulk_update_preview`, `search_and_bulk_update_execute`
+- Enhanced `update_note` with full REST API parameters + `todo_completed` timestamp handling
+- Field registry infrastructure (`JOPLIN_NOTE_FIELDS`, `generate_field_pars`, `apply_field_converters`)
+- Safety: `_save_note_revision()` auto-backup with sequential diffs + `diff-match-patch` dependency
+- Trash: `list_trash`, `restore_from_trash`
+- Revisions: `get_note_history`, `restore_note_revision`, `manually_backup_note`
+- Database backup: `backup_database` with auto-trigger before bulk ops
+- `format_delete_success` `soft_delete` parameter
+
 **Phase 2: MCP Docker Development Toolkit Extraction (SEPARATE PROJECT)**
 - **Target**: Extract Docker development tooling into standalone `mcp-docker-dev` package
 - **Vision**: Reusable development toolkit for ANY MCP project, not joplin-mcp specific
