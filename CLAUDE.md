@@ -41,6 +41,8 @@ python install.py --command-args --token "your_token_here" --deployment python -
 **Upstream Sync Discovery (updated 2026-03-10)**: alondmnt has released v0.5.0 and v0.6.0 since our fork:
 - **v0.5.0** (Jan 31): Path-based notebook resolution, `todo_due` param, search quoting fix (same as ours), single-note cache, **refactored monolithic `fastmcp_server.py` into modular `tools/` packages**, fixed `untag_note`
 - **v0.6.0** (Feb 10): `edit_note` tool (find/replace, append, prepend without full-body overwrite), `find_in_note` (regex search within note), deletion tools disabled by default, docstring cross-references between `update_note` and `edit_note` for LLM tool selection
+- **v0.7.0** (Mar): Claude Code plugin with Joplin orchestration skill, sorting for find functions, marketplace manifest
+- **v0.7.1** (Mar): Bugfix — add `edit_note`/`import_from_file` to installer permission prompts
 - **Merge complexity**: Higher than before — v0.5.0 refactored into `tools/notes.py` etc., so our PR must target their new modular structure, not the monolith
 - **Overlaps**: Search quoting fix (both fixed independently), delete safety (different approaches)
 - **Their gaps (our unique value)**: Bulk operations (6 tools), auto-backup revisions, `todo_completed` timestamp handling
@@ -57,6 +59,40 @@ python install.py --command-args --token "your_token_here" --deployment python -
 - **Conflicts**: Minimal - these are primarily new function additions
 - **Porting notes**: Tools slot into `tools/notes.py` and `tools/tags.py`. The field registry system (`JOPLIN_NOTE_FIELDS`, `generate_field_pars`) is self-contained infrastructure our bulk ops depend on — include as-is. `_save_note_revision()` auto-backup is a core safety contribution (adds `diff-match-patch` dependency). Skip: search quoting fix (they fixed independently). Delete safety enhancements (soft-delete verification, docstrings, restore) are complementary to his disable-by-default approach — candidate for a separate follow-up PR
 - **PR etiquette**: First contact with alondmnt — include a note offering to restructure if preferred
+
+**Porting Assessment (2026-03-28):**
+
+alondmnt's v0.5.0+ modular structure (target for our PR):
+
+| File | Contents |
+|------|----------|
+| `fastmcp_server.py` | Shared infra: validators, converters, client, pagination, search helpers |
+| `formatting.py` | `ItemType` enum, `format_*_success`, pagination formatting |
+| `content_utils.py` | Markdown parsing, TOC, previews, timestamps |
+| `notebook_utils.py` | Notebook lookup by name/path, caching |
+| `tools/notes.py` | All note tools (get, create, update, edit, delete, find, links) |
+| `tools/notebooks.py` | Notebook CRUD |
+| `tools/tags.py` | Tag CRUD + tag_note/untag_note |
+
+Where our additions go:
+
+| Our Addition | Target File | Difficulty |
+|-------------|-------------|------------|
+| `move_note`, `bulk_move_notes` | `tools/notes.py` | Low (additive) |
+| `search_and_bulk_update_*` | `tools/notes.py` | Low (additive) |
+| `bulk_tag_notes`, `strip_note_tags` | `tools/tags.py` | Low (additive) |
+| `list_trash`, `restore_from_trash` | `tools/notes.py` or new `tools/trash.py` | Low (additive) |
+| `get_note_history`, `restore_note_revision`, `manually_backup_note` | New `tools/revisions.py` | Low (new file) |
+| `backup_database` | New `tools/backup.py` | Low (new file) |
+| Field registry (`JOPLIN_NOTE_FIELDS`, `generate_field_pars`) | `fastmcp_server.py` | Medium (new infra) |
+| `_save_note_revision` + diff helpers | Shared or `tools/revisions.py` | Medium (new infra + dependency) |
+| `convert_todo_completed` | `fastmcp_server.py` | Low (extends converters) |
+| `update_note` enhancements | `tools/notes.py` | **High** (both modified, merge required) |
+| `format_delete_success` `soft_delete` param | `formatting.py` | Low (one-param addition) |
+
+**Branch status**: `rebase/upstream-pr` exists, currently at `upstream/main` (now v0.7.1). Ready for porting.
+
+**Current `upstream/main` HEAD**: `1a7f40e` (v0.7.1, fetched 2026-03-28)
 
 **Phase 2: MCP Docker Development Toolkit Extraction (SEPARATE PROJECT)**
 - **Target**: Extract Docker development tooling into standalone `mcp-docker-dev` package
