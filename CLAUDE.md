@@ -2,7 +2,29 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Current Branch**: `rebase-and-extract.docker.dev` - Working on PR resolution, upstream rebase, and Docker toolkit extraction strategy.
+**Current Branch**: `feature/bulk-operations-and-api-enhancements` — main development branch with all features.
+
+**PR Status (2026-03-30):** PR #19 submitted to alondmnt/joplin-mcp from `rebase/upstream-pr` branch. Awaiting review.
+
+### Session Context (2026-03-30 — PR port session)
+
+**What was done:**
+- Ported all 12 MCP tools from monolithic fastmcp_server.py to alondmnt's v0.7.1 modular structure
+- 3 clean commits: new files (3100 lines), required wiring (58 lines), optional enhancements (56 lines)
+- Refactored field_helpers.py: removed 7 dead/buggy functions (extract_query_fields, build_conditional_fields_list, etc.), replaced with clean `_search_notes`, `_parse_update_params`, `ALL_NOTE_FIELDS`
+- 87 unit tests (pr_tests.py) + live MCP testing of all 12 tools
+- PR description at `PR_DESCRIPTION.md` (untracked, in repo root)
+
+**Known issues to address:**
+- `search_and_bulk_update_preview` missing `limit` parameter (Pydantic validation error when passed)
+- Unit tests don't cover `search_and_bulk_update_preview/execute` MCP tools directly (only their helpers)
+- `MANUAL_MCP_TEST_PLAN.md` has hardcoded note IDs from our test session — needs genericizing
+- v1 files (`field_helpers_v1.py`, `notes_bulk_v1.py`) are untracked on rebase branch — delete when confident
+
+**Branch notes:**
+- `rebase/upstream-pr`: clean PR branch based on upstream v0.7.1 — do NOT commit project docs here
+- `feature/bulk-operations-and-api-enhancements`: our full development branch — project CLAUDE.md lives here
+- Session shutdown context capture must happen on the feature branch, not the PR branch
 
 **See also:** `@CHANGELOG_FEATURE_ADDITIONS.md` for detailed feature additions and changes made to this fork.
 
