@@ -19,12 +19,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `search_and_bulk_update_preview` missing `limit` parameter (Pydantic validation error when passed)
 - Unit tests don't cover `search_and_bulk_update_preview/execute` MCP tools directly (only their helpers)
 - `MANUAL_MCP_TEST_PLAN.md` has hardcoded note IDs from our test session — needs genericizing
-- v1 files (`field_helpers_v1.py`, `notes_bulk_v1.py`) are untracked on rebase branch — delete when confident
+- v1 files deleted from rebase branch (2026-03-31)
 
 **Branch notes:**
 - `rebase/upstream-pr`: clean PR branch based on upstream v0.7.1 — do NOT commit project docs here
 - `feature/bulk-operations-and-api-enhancements`: our full development branch — project CLAUDE.md lives here
 - Session shutdown context capture must happen on the feature branch, not the PR branch
+
+### TODO: Post-PR Branch Cleanup and Reorganization
+
+**Priority: After PR #19 is resolved (accepted or rejected)**
+
+**1. Extract transport/Docker/distribution infrastructure (SEPARATE REPO)**
+- The dev branch contains Docker development toolkit, deployment modes, installation enhancements, config management (`mcp-config-manager.sh`), OS-aware networking
+- These are NOT part of the PR to alondmnt — they're reusable MCP infrastructure
+- Extract to `MatthewOGoodman/mcp-docker-dev` (see Phase 2 in PR Strategy below)
+- Split must happen BEFORE rebasing the dev branch
+
+**2. Update main branch**
+- Our `main` is stale (at the original fork point)
+- If PR accepted: sync `main` with upstream/main (mirror alondmnt's state exactly)
+- If PR rejected: set `main` to `rebase/upstream-pr` (our clean upstream-compatible code)
+- Either way, `main` becomes the clean base
+
+**3. Create clean dev branch on new main**
+- After extracting Docker/distribution code and updating main
+- New dev branch based on `main` for any project-specific extras (CLAUDE.md, project docs, features beyond the PR)
+- Old `feature/bulk-operations-and-api-enhancements` can be archived — it served its purpose as the monolithic dev branch
 
 **See also:** `@CHANGELOG_FEATURE_ADDITIONS.md` for detailed feature additions and changes made to this fork.
 
