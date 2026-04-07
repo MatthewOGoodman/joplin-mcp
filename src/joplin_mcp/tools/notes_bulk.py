@@ -348,6 +348,11 @@ async def search_and_bulk_update_preview(
     if parent_notebook is not None:
         parent_id = get_notebook_id_by_name(parent_notebook)
 
+    # Runtime validation (must match search_and_bulk_update_execute)
+    is_todo = flexible_bool_converter(is_todo)
+    is_todo_filter = flexible_bool_converter(is_todo_filter)
+    todo_completed_filter = flexible_bool_converter(todo_completed_filter)
+
     updates, filters = _parse_update_params(
         title=title, body=body, is_todo=is_todo,
         todo_completed=todo_completed, parent_id=parent_id,
