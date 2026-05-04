@@ -146,9 +146,37 @@ MCP server config for Claude Code: global `mcpServers` in `~/.claude.json` — l
 
 ## TODO: Future Development
 
-### Upstream Contributions (accepted by alondmnt)
-- [ ] `restore_from_trash` standalone PR (with cache clearing, test naming, output format changes)
-- [ ] #20 — Trash listing via `find_notes(trash=True)`
+### TODO: CLAUDE.md Cross-Branch Persistence (needs /framing + plan)
+
+**Architecture (decided):** CLAUDE.md on `feature/dev` contains a `## PROJ_SHARED_CLAUDE` section with cross-branch content (TODOs, branch strategy, upstream relationship, architecture). This section is the canonical tracked version. Before branch switch, it's extracted to an untracked `PROJ_SHARED_CLAUDE.md` that floats across branches. On return, changes are merged back.
+
+**Remaining work:**
+- [ ] Define which CLAUDE.md content is shared vs branch-specific (blocked until branch roles are clearer — `feature/dev` currently mirrors `main`)
+- [ ] Create the `## PROJ_SHARED_CLAUDE` section and restructure CLAUDE.md accordingly
+- [ ] **Before implementing:** Apply /framing and /research to survey whether better solutions exist for cross-branch CLAUDE.md persistence. The design below is a working proposal, not a final decision.
+- [ ] **Proposed design:** Single untracked `PROJ_SHARED_CLAUDE.md` with branch-keyed sections:
+  ```
+  # PROJ_SHARED_CLAUDE
+  ## PROJ_SHARED_CLAUDE_main
+  ## PROJ_SHARED_CLAUDE_feature/dev
+  ## PROJ_SHARED_CLAUDE_pr/restore-from-trash
+  ```
+  Post-checkout hook uses `md_tools insert` to add/update the section for the current branch. Accumulation works well (new TODOs, notes, context). Edits/deletions to shared content are harder — corrections noted in the branch section, resolved during merge-back on `feature/dev`.
+- [ ] Implement post-checkout hook for the above. **Critical:** must not overwrite existing content in other branch sections. `md_tools insert` preferred over `cp`.
+- [ ] Implement merge-back step: on return to `feature/dev`, review branch sections and reconcile into the canonical `## PROJ_SHARED_CLAUDE` section of tracked CLAUDE.md.
+- [ ] Consider whether this pattern should be generalized via claude-wrangler for other multi-branch repos
+
+### TODO: Upstream Sync Strategy (needs plan)
+
+PR #23 merged into alondmnt/joplin-mcp on 2026-04-17 (`restore_from_trash` + `find_notes(trash=True)` + docstring fixes). Our `main` and `feature/dev` don't have these changes from upstream's side. Need to determine:
+- Whether our code structure is clean enough to rebase on upstream (our 12 tools in `tools/*.py` are additive, but `fastmcp_server.py` and `formatting.py` have modifications)
+- Whether to `git merge upstream/main` or `git rebase --onto upstream/main` for our branches
+- How to handle divergence if alondmnt modifies files we also modified
+- Check upstream for any other changes since v0.7.1
+This affects both `main` and `feature/dev`. The goal is to be able to pull upstream changes readily.
+
+### TODO: Upstream Contributions
+- [x] PR #23 merged (2026-04-17) — `restore_from_trash` + `find_notes(trash=True)` + soft-delete docstrings
 - [ ] #21 — Moving notes via `notebook_name` on `update_note`
 - [ ] #22 — Bulk tagging via `str | List[str]` on `tag_note`/`untag_note`
 
@@ -157,6 +185,10 @@ MCP server config for Claude Code: global `mcpServers` in `~/.claude.json` — l
 - [ ] `get_recent_changes`: Expose Joplin events API
 - [ ] Resource/attachment management tools
 - [ ] Document Joplin search operators in tool descriptions
+
+### TODO: MCP Packaging/Distribution Infrastructure (needs plan)
+
+The `extract/mcp-docker-dev` branch (snapshot of old monolithic branch) contains Docker development toolkit, deployment modes, install enhancements, and config management (`mcp-config-manager.sh`). Plan was to extract into separate `MatthewOGoodman/mcp-docker-dev` repo as reusable infrastructure for any MCP project. Status: parked, not started.
 
 ### Infrastructure
 - [ ] Extract Docker/install infrastructure from `extract/mcp-docker-dev` into separate `mcp-docker-dev` repo
