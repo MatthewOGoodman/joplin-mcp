@@ -285,7 +285,7 @@ Until that overwrite happens, both the interim direct symlink AND the new wrappe
 - [ ] CLAUDE.md "Dashboard Subpackage" section (under Architecture) gains a one-line pointer to this wrapper + manifest pattern
 
 ### Dashboard config schema + validation
-See `markdowns/plans_draft/CLAUDE.PLANS_20260515_dashboard-config-schema-validation.md`. Status: in-progress (Phases 1–4 landed this session; Phase 5 commit + STATUS.md flip pending).
+Shipped 2026-05-15. Plan: `markdowns/plans_completed/CLAUDE.PLANS_20260515_dashboard-config-schema-validation.md`.
 
 ### TODO: CLAUDE.md Cross-Branch Persistence (needs /framing + plan)
 

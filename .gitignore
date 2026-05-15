@@ -255,6 +255,10 @@ temp_test_files/
 # Diagnostic / experimental scratch
 test_scripts/
 
+# Plans — only plans_completed/ is tracked
+markdowns/plans_draft/
+markdowns/plans_backup/
+
 # Dashboard consumer configs (symlinks into consumer repos)
 src/joplin_mcp/dashboard/configs/*
 !src/joplin_mcp/dashboard/configs/README.md
