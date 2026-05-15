@@ -1,0 +1,3 @@
+output: /tmp/dashboard_minimal.md
+sections:
+  - title: All notes

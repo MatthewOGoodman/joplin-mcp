@@ -252,6 +252,17 @@ temp-*.json
 test_output/
 temp_test_files/
 
+# Diagnostic / experimental scratch
+test_scripts/
+
+# Dashboard consumer configs (symlinks into consumer repos)
+src/joplin_mcp/dashboard/configs/*
+!src/joplin_mcp/dashboard/configs/README.md
+
+# Editor / backup files
+*.bak
+*.bak2
+
 # Development database files
 *.db
 *.sqlite

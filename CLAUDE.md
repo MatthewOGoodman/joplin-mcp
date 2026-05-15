@@ -101,6 +101,7 @@ FastMCP-based MCP server providing AI assistants access to Joplin notes. Based o
 | `src/joplin_mcp/tools/notes_revisions.py` | **Our additions**: get_note_history, restore_note_revision, manually_backup_note |
 | `src/joplin_mcp/tools/backup_database.py` | **Our addition**: backup_database |
 | `src/joplin_mcp/tools/field_helpers.py` | **Our addition**: JOPLIN_NOTE_FIELDS registry, _search_notes, _parse_update_params |
+| `src/joplin_mcp/dashboard/` | **Our addition**: dashboard subpackage (config-driven Joplin → Markdown table renderer). See "Dashboard Subpackage" below. |
 
 ### Tool Inventory
 
@@ -137,6 +138,54 @@ Config search order: `~/.joplin-mcp.json` > `~/.config/joplin-mcp/config.json` >
 
 MCP server config for Claude Code: global `mcpServers` in `~/.claude.json` — launches `joplin-mcp-server` with env vars for token/host/port.
 
+### Dashboard Subpackage
+
+The `joplin_mcp.dashboard` subpackage is a config-driven utility that queries Joplin (via REST API) and renders a Markdown table-style dashboard to a file. First consumer is the `job_search` project (`~/projects/dev/job_search/`); designed for reuse across other GTD aggregations where the table IS the answer (no priority triage required).
+
+**Layout:**
+
+| File | Contents |
+|------|----------|
+| `dashboard/types.py` | `NoteRecord` dataclass; joppy time normalization to UTC datetime |
+| `dashboard/config.py` | `DashboardConfig` / `SectionConfig` dataclasses; YAML config loading and validation |
+| `dashboard/loader.py` | `Loader` ABC and `JoplinRestLoader` (joppy-backed). v1.5 will add `JoplinSqliteLoader` per CLAUDE.md TODO. |
+| `dashboard/render.py` | Pure rendering: `render_section`, `assemble_dashboard`, sort, group-by-tag-prefix, Markdown escape |
+| `dashboard/cli.py` | `joplin-dashboard <config.yaml>` entry point with `--dry-run` |
+
+**CLI:** Registered as `joplin-dashboard` via `[project.scripts]` in `pyproject.toml`. After `pip install -e .`, runs from any cwd.
+
+**Dependency:** `python-frontmatter>=1.0.0` (pulled in via `pyproject.toml` deps). Used to parse YAML frontmatter from note bodies for cross-reference fields and arbitrary frontmatter columns.
+
+**YAML config schema** (consumer-owned; the CLI accepts a path to any such YAML file):
+
+```yaml
+output: /path/to/DASHBOARD.md
+header: |
+  # My Dashboard
+  _Auto-generated. Last refresh: {timestamp}_
+
+sections:
+  - title: "Section A"
+    notebook: "Notebook Path"
+    tags_required: ["Tag: Foo"]
+    tags_excluded: []
+    extra_query: null              # optional raw appended to /search query
+    columns: [title, tags, updated]
+    group_by_tag_prefix: null      # or e.g. "Prefix " for prefix-grouped sections
+    sort_by: updated               # built-in: title|updated|created|notebook; else looks up frontmatter field
+    sort_dir: desc                 # asc|desc
+```
+
+Consumer projects own their config files; joplin-mcp does not track or reference them. Two dirs under `src/joplin_mcp/dashboard/` exist to organize the relationship: `schemas/` (tracked) holds JSON Schema validators for the config format; `configs/` (gitignored) holds symlinks into consumer repos — e.g., `configs/job_search.yaml` → `~/projects/dev/job_search/dashboards/job_search.yaml`. Each dir has a `README.md` with the full convention; full key-by-key spec lives in `docs/dashboard_config.md` (pending the schema TODO).
+
+**Backend decision (recorded 2026-05-06):** REST API for v1 via existing joplin-mcp client. Pluggable Loader interface in place; `JoplinSqliteLoader` deferred to v1.5 with documented triggers (sync-index staleness from #11631, OCR-text bug from #12128, or use cases needing Joplin Desktop closed). Verified empirically: `any:1 tag:A tag:B notebook:X notebook:Y` returns `(A∪B)∩(X∪Y)` correctly. See `research_output/2026-05-06_joplin-backend-decision.md`.
+
+**Architectural note:** The dashboard subpackage is technically a REST-API consumer rather than an MCP feature, but lives in joplin-mcp because it reuses joplin-mcp's joppy client wrapper, config/auth handling, install path, and test infrastructure. If it grows beyond what fits cleanly, promote to a sibling repo `joplin-dashboard/`.
+
+**Tests:** `tests/test_dashboard_*.py` (matching pytest conventions of the rest of joplin-mcp).
+
+**Mini-plan:** `markdowns/plans_draft/dashboard_script_mini_plan.md`.
+
 ## Joplin API Notes
 
 **Unexposed capabilities** worth knowing about:
@@ -145,6 +194,98 @@ MCP server config for Claude Code: global `mcpServers` in `~/.claude.json` — l
 - **Search operators**: `title:`, `body:`, `tag:`, `notebook:`, `created:`, `updated:`, `due:`, `type:`, `iscompleted:`, `resource:`, `sourceurl:`, `any:1` (OR), `-` (negation), `*` (wildcard).
 
 ## TODO: Future Development
+
+### TODO: joplin-dashboard global discoverability — wrapper + manifest.txt
+
+**Problem.** The `joplin-dashboard` CLI script is only on PATH while the `joplin-mcp` conda env is active. Consumer projects (e.g. `~/projects/dev/job_search/`) want to invoke it from any non-interactive shell without per-call conda activation. Hardcoding the env's bin path (`~/miniforge3/envs/joplin-mcp/bin/joplin-dashboard`) would make the wrapper machine-specific (assumes miniforge install path AND env name).
+
+**Solution.** Add a tracked wrapper at `bin/joplin-dashboard` in this repo that resolves the env path dynamically at invocation time via `conda info --base`. Then add a `manifest.txt` so claude-wrangler's universal symlink installer (`~/projects/dev/claude-wrangler/install.sh`) creates a symlink at `~/.claude/joplin-dashboard` (already on user's PATH).
+
+**Approaches considered before settling here:**
+
+- *Hardcoded wrapper* (`exec ~/miniforge3/envs/joplin-mcp/bin/joplin-dashboard "$@"`) — rejected as machine-specific (assumes miniforge install + env name + path).
+- *Install-time generated wrapper, gitignored* — faster per call (no `conda info` subprocess) but requires `install.py` changes and breaks on env rename / conda-flavor switch unless reinstalled. Brittle.
+- *Add env-bin sources to claude-wrangler's manifest format* (e.g., `target:env:joplin-mcp:bin/script`) — extends a generic tool for one symlink. YAGNI; rejected.
+- *PATH-prepend the env's bin directory in `.zshenv`* — leaks every env binary to global PATH (joplin-mcp-server, joppy, fastmcp, etc.). Pollution.
+- *pipx install* — would be a SECOND install of joplin-mcp, breaking the editable-install dev sync.
+- The dynamic-resolution wrapper below was selected: portable, tracked, works through claude-wrangler's existing installer with no installer changes.
+
+**Files to add (both tracked):**
+
+`bin/joplin-dashboard`:
+```bash
+#!/usr/bin/env bash
+# Wrapper that delegates to the env-installed joplin-dashboard CLI.
+# Resolves conda env dynamically; portable across miniforge/anaconda/miniconda
+# installs as long as a conda env named 'joplin-mcp' exists.
+set -euo pipefail
+CONDA_BASE="$(conda info --base 2>/dev/null)" || {
+  echo "ERROR: conda not on PATH" >&2; exit 1
+}
+ENV_BIN="$CONDA_BASE/envs/joplin-mcp/bin/joplin-dashboard"
+[[ -x "$ENV_BIN" ]] || {
+  echo "ERROR: $ENV_BIN missing — run 'pip install -e .' in the joplin-mcp env" >&2
+  exit 1
+}
+exec "$ENV_BIN" "$@"
+```
+`chmod +x bin/joplin-dashboard` after creation.
+
+`manifest.txt`:
+```
+# joplin-mcp symlink manifest (consumed by ~/projects/dev/claude-wrangler/install.sh)
+# Format: target:source-relative-to-repo
+
+~/.claude/joplin-dashboard:bin/joplin-dashboard
+```
+
+**Setup command (post-implementation, run by user once):**
+```bash
+~/projects/dev/claude-wrangler/install.sh ~/projects/dev/joplin-mcp
+```
+
+**Why dynamic resolution and not install-time generation:**
+
+- Adds ~150ms (`conda info --base` subprocess) per call. Imperceptible for a manual dashboard regen.
+- One tracked file, identical across machines.
+- No `install.py` change needed.
+- Drift-resistant — surviving a dotfiles port or conda-flavor switch doesn't require reinstall.
+
+The faster alternative (install-time-generated wrapper, gitignored, with hardcoded resolved path) is brittle and adds install-script work for marginal benefit.
+
+**Why no extension to claude-wrangler.** claude-wrangler's `install.sh` requires `source` paths to be inside the project repo (`SOURCE_PATH="$REPO_DIR/$SOURCE_REL"`). The wrapper-in-repo pattern fits this constraint exactly without requiring claude-wrangler changes. Discussed and rejected: extending claude-wrangler's manifest format to support out-of-repo sources (e.g., env-bin) — generic but YAGNI for one symlink.
+
+**Background.** Claude-wrangler's universal installer was verified to handle this pattern cleanly (see `~/projects/dev/claude-wrangler/install.sh` and `manifest.txt`). It supports running against any project: `install.sh /path/to/project` reads that project's `manifest.txt`. joplin-mcp would be the second project (after claude-wrangler itself) to use the universal installer, validating the design.
+
+**Interim workaround already in place — will be overwritten by the proper solution.**
+
+A direct symlink was created from the job_search session to unblock dashboard invocation in non-conda shells immediately:
+
+```
+~/.claude/joplin-dashboard → ~/miniforge3/envs/joplin-mcp/bin/joplin-dashboard
+```
+
+This is hardcoded and machine-specific (the exact thing the proper solution avoids). It exists ONLY so the job_search session could finish testing the dashboard pipeline end-to-end without waiting for this TODO to land.
+
+When this TODO ships:
+
+1. The new `bin/joplin-dashboard` wrapper exists in the repo.
+2. Running `~/projects/dev/claude-wrangler/install.sh ~/projects/dev/joplin-mcp` will detect the existing symlink at `~/.claude/joplin-dashboard` as a "wrong-target symlink" (it points at the env binary; the manifest expects it to point at `~/projects/dev/joplin-mcp/bin/joplin-dashboard`).
+3. claude-wrangler's installer behavior (per its docs) is to **warn and skip** in that case unless invoked with `--force`. The user (or the joplin-mcp implementer) should run `install.sh --force ~/projects/dev/joplin-mcp` once to overwrite the interim symlink with one pointing at the new wrapper.
+4. Once overwritten, the interim symlink is gone — the path `~/.claude/joplin-dashboard` now resolves through the wrapper, which dynamically resolves the env binary. Same effect, machine-portable.
+
+Until that overwrite happens, both the interim direct symlink AND the new wrapper would work at the call site (they ultimately invoke the same env binary), but only the wrapper survives a machine reorg / conda-flavor switch.
+
+**Acceptance criteria:**
+
+- [ ] `bin/joplin-dashboard` (tracked, executable) exists in joplin-mcp repo
+- [ ] `manifest.txt` (tracked) exists with the one symlink entry
+- [ ] Running `~/projects/dev/claude-wrangler/install.sh ~/projects/dev/joplin-mcp` creates / reconciles `~/.claude/joplin-dashboard` to point at `bin/joplin-dashboard`
+- [ ] `joplin-dashboard --help` works from a fresh non-conda shell (already verified for the temporary symlink; should continue working through the wrapper)
+- [ ] CLAUDE.md "Dashboard Subpackage" section (under Architecture) gains a one-line pointer to this wrapper + manifest pattern
+
+### Dashboard config schema + validation
+See `markdowns/plans_draft/CLAUDE.PLANS_20260515_dashboard-config-schema-validation.md`. Status: in-progress (Phases 1–4 landed this session; Phase 5 commit + STATUS.md flip pending).
 
 ### TODO: CLAUDE.md Cross-Branch Persistence (needs /framing + plan)
 
@@ -165,6 +306,7 @@ MCP server config for Claude Code: global `mcpServers` in `~/.claude.json` — l
 - [ ] Implement post-checkout hook for the above. **Critical:** must not overwrite existing content in other branch sections. `md_tools insert` preferred over `cp`.
 - [ ] Implement merge-back step: on return to `feature/dev`, review branch sections and reconcile into the canonical `## PROJ_SHARED_CLAUDE` section of tracked CLAUDE.md.
 - [ ] Consider whether this pattern should be generalized via claude-wrangler for other multi-branch repos
+- [ ] **Scope-extension note (2026-05-06):** Once Plan 1 (Project State Hygiene — see `claude-wrangler/CLAUDE.md` Active Work, master plan `claude-wrangler/markdowns/plans_draft/CLAUDE.PLANS_20260506_vigilant-grooming-codex_PROJECT_STATE_HYGIENE_MINIPLAN.md`) lands, this floating-file design must also carry `STATUS.md`. Either extend the design to a sibling `PROJ_SHARED_STATUS.md`, or merge both into a single floating file with branch-keyed sections for each artifact. Revisit when Plan 1 is approved.
 
 ### TODO: Upstream Sync Strategy (needs plan)
 

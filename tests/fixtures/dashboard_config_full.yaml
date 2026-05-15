@@ -1,0 +1,28 @@
+output: /tmp/dashboard_full.md
+
+header: |
+  # Test Dashboard
+  _Last refresh: {timestamp}_
+
+footer: "_End._"
+
+sections:
+  - title: "People — active"
+    notebook: "People"
+    tags_required: ["Status: Active"]
+    tags_excluded: []
+    extra_query: null
+    columns: [title, tags, updated]
+    group_by_tag_prefix: null
+    sort_by: updated
+    sort_dir: desc
+
+  - title: "Applications by phase"
+    notebook: "Applications"
+    tags_required: []
+    tags_excluded: ["Status: Archived"]
+    extra_query: "title:apply*"
+    columns: [title, tags, priority, updated]
+    group_by_tag_prefix: "Phase "
+    sort_by: priority
+    sort_dir: asc
