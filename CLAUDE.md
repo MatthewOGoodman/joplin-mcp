@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code when working with code in this repository.
 
+**Live project state** is auto-imported from STATUS.md below. To update — capturing emergent items, reclassifying threads, or grooming state — invoke `/session-checkpoint` (mid-session) or `/session-shutdown` (session end).
+
+@STATUS.md
+
 ## Branch Strategy
 
 | Branch | Purpose | Status |
