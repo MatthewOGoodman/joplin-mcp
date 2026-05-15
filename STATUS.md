@@ -16,7 +16,11 @@ Just shipped: dashboard config JSON Schema + `--validate` CLI flag + symlink-dis
 
 ## 2. Active Threads
 
-(none — first-run migration; see §3 for queued / blocked / idea threads)
+### Joppy `utcfromtimestamp` deprecation warning  [implement]
+
+`joppy/data_types.py:116` emits `DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).` on every `joplin-dashboard` invocation. Cosmetic CLI noise. Surfaced from `job_search` session 2026-05-15 dashboard regeneration.
+
+- 2026-05-15 22:00  [ ]  Decide: bump `joppy` version (if fixed upstream), suppress warning at joplin-mcp's entry point, or submit upstream PR
 
 ## 3. Inactive Threads
 
@@ -30,7 +34,7 @@ Wrapper at `bin/joplin-dashboard` + `manifest.txt` so the CLI is on PATH from an
 - 2026-05-15 22:00  [ ]  Verify `joplin-dashboard --help` from fresh non-conda shell
 - 2026-05-15 22:00  [ ]  Add one-line pointer in CLAUDE.md "Dashboard Subpackage" section
 
-Design + rationale stays in `CLAUDE.md` → `## TODO: Future Development / ### TODO: joplin-dashboard global discoverability`.
+Design + rationale in `CLAUDE.md` → "Design Notes / Design: joplin-dashboard global discoverability (wrapper + manifest.txt)".
 
 ### Notebook-path support in dashboard YAML  [queued]
 
@@ -67,7 +71,7 @@ CLAUDE.md disappears on checkout to clean PR branches. Current proposal: `## PRO
 - 2026-05-15 22:00  [ ]  Define shared-vs-branch-specific content (blocked until branch roles clearer)
 - 2026-05-15 22:00  [ ]  Implement chosen design
 
-Proposed design notes in CLAUDE.md → "TODO: CLAUDE.md Cross-Branch Persistence".
+Proposed design in CLAUDE.md → "Design Notes / Design: CLAUDE.md cross-branch persistence (proposed; needs /framing)".
 
 ### Direct SQLite read layer  [idea]
 
@@ -76,7 +80,7 @@ Joplin REST API has no server-side filtering; all filtering is Python-side post-
 - 2026-05-15 22:00  [ ]  /framing on hybrid SQLite-read / REST-write architecture
 - 2026-05-15 22:00  [ ]  Write plan
 
-Design considerations preserved in CLAUDE.md → "Infrastructure / Direct SQLite read layer".
+Design considerations in CLAUDE.md → "Design Notes / Design: Direct SQLite read layer".
 
 ### Fork enhancements  [idea]
 
