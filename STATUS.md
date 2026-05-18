@@ -1,6 +1,6 @@
 # STATUS
 
-*Last checkpoint: — | Last prioritized: — | Last shutdown: 2026-05-15 22:00*
+*Last checkpoint: — | Last prioritized: 2026-05-18 09:00 | Last shutdown: 2026-05-15 22:00*
 
 <!-- session-checkpoint-anchor: 2026-05-15T22:00:00Z -->
 
@@ -12,15 +12,20 @@ FastMCP-based MCP server giving AI assistants access to Joplin notes; fork of al
 
 ## 1. Focus
 
-Just shipped: dashboard config JSON Schema + `--validate` CLI flag + symlink-discovery (commit `408b754`, pushed). No thread currently in active focus; everything is queued in §3. Recommend `/session-prioritize` before the next work block.
+Dashboard schema validation shipped (commit `408b754`) and CLAUDE.md ↔ STATUS.md migration complete (commit `b417649`). Single §2 thread in focus: `/framing` then plan + implement full notebook-path matching in `JoplinRestLoader` to clear the remaining cross-project blocker for job_search.
 
 ## 2. Active Threads
 
-### Joppy `utcfromtimestamp` deprecation warning  [implement]
+### Notebook-path support in dashboard YAML  [plan]
 
-`joppy/data_types.py:116` emits `DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).` on every `joplin-dashboard` invocation. Cosmetic CLI noise. Surfaced from `job_search` session 2026-05-15 dashboard regeneration.
+Joplin REST search currently filters notebook by leaf name only; need full-path matching in `JoplinRestLoader._build_query()` (`loader.py:64-74`). Open job_search blocker against joplin-mcp.
 
-- 2026-05-15 22:00  [ ]  Decide: bump `joppy` version (if fixed upstream), suppress warning at joplin-mcp's entry point, or submit upstream PR
+- 2026-05-15 22:00  [ ]  /framing on full-path matching approach (path-as-query syntax, intermediate node walk)
+- 2026-05-15 22:00  [ ]  Write plan in `markdowns/plans_draft/`
+- 2026-05-15 22:00  [ ]  Implement in `dashboard/loader.py`
+- 2026-05-15 22:00  [ ]  Test against job_search YAML configs that use nested notebooks
+
+Cross-project blocker tracked in `~/.claude/STATUS.md` under "Notebook-path support in dashboard YAML".
 
 ## 3. Inactive Threads
 
@@ -35,17 +40,6 @@ Wrapper at `bin/joplin-dashboard` + `manifest.txt` so the CLI is on PATH from an
 - 2026-05-15 22:00  [ ]  Add one-line pointer in CLAUDE.md "Dashboard Subpackage" section
 
 Design + rationale in `CLAUDE.md` → "Design Notes / Design: joplin-dashboard global discoverability (wrapper + manifest.txt)".
-
-### Notebook-path support in dashboard YAML  [queued]
-
-Joplin REST search currently filters notebook by leaf name only; need full-path matching in `JoplinRestLoader._build_query()` (`loader.py:64-74`). Open job_search blocker against joplin-mcp.
-
-- 2026-05-15 22:00  [ ]  /framing on full-path matching approach (path-as-query syntax, intermediate node walk)
-- 2026-05-15 22:00  [ ]  Write plan in `markdowns/plans_draft/`
-- 2026-05-15 22:00  [ ]  Implement in `dashboard/loader.py`
-- 2026-05-15 22:00  [ ]  Test against job_search YAML configs that use nested notebooks
-
-Cross-project blocker tracked in `~/.claude/STATUS.md` under "Notebook-path support in dashboard YAML".
 
 ### Upstream contributions to alondmnt/joplin-mcp  [queued]
 
@@ -96,6 +90,14 @@ Wish-list, not formally scoped.
 Extract Docker/install infrastructure from `extract/mcp-docker-dev` branch into a separate `MatthewOGoodman/mcp-docker-dev` repo. Parked, not started.
 
 - 2026-05-15 22:00  [ ]  Extract from `extract/mcp-docker-dev` into separate repo
+
+### Joppy `utcfromtimestamp` deprecation warning  [deferred]
+
+`joppy/data_types.py:116` emits `DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).` on every `joplin-dashboard` invocation. Cosmetic CLI noise. Surfaced from `job_search` session 2026-05-15 dashboard regeneration.
+
+Deferred 2026-05-18 — relying on joppy upstream to ship a fix before CPython actually removes `utcfromtimestamp()`. Revisit if joppy hasn't fixed it by the time a CPython removal version is announced (deprecated in 3.12; no removal version yet).
+
+- 2026-05-15 22:00  [ ]  Decide: bump `joppy` version (if fixed upstream), suppress warning at joplin-mcp's entry point, or submit upstream PR
 
 ## 4. Deliverables and Deadlines
 
