@@ -245,6 +245,10 @@ class JoplinMCPConfig:
         "manually_backup_note": True,  # Create revision snapshot
         # Backup operations (1 tool)
         "backup_database": True,  # SQLite database backup
+        # File round-trip operations (3 tools, mdsync)
+        "update_note_from_file": True,  # PUT bound file onto existing note (drift-checked)
+        "push_md_file": True,  # Create note from file (force=clobber)
+        "pull_note_to_file": True,  # Write note to local file for editing
     }
 
     # Tool categories for easier management
@@ -297,6 +301,11 @@ class JoplinMCPConfig:
         ],
         "backup": [
             "backup_database",
+        ],
+        "mdsync": [
+            "update_note_from_file",
+            "push_md_file",
+            "pull_note_to_file",
         ],
     }
 
