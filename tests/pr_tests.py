@@ -397,6 +397,36 @@ class TestBackupDatabase:
                     side_effect=FileNotFoundError):
             assert backup_joplin_database() is None
 
+    @patch("joplin_mcp.tools.backup_database.subprocess.run")
+    @patch("joplin_mcp.tools.backup_database._get_joplin_db_path")
+    def test_manual_backup_includes_slug(self, mock_path, mock_run):
+        from pathlib import Path
+        import tempfile
+        from joplin_mcp.tools.backup_database import backup_joplin_database
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_path.return_value = Path(tmpdir) / "database.sqlite"
+            (Path(tmpdir) / "database.sqlite").touch()
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+            with patch("joplin_mcp.tools.backup_database._BACKUP_DIR", Path(tmpdir) / "backups"):
+                # Free text is slugified into the filename.
+                result = backup_joplin_database(force=True, label="Pre Archive Sweep!")
+            assert result is not None
+            assert "manual_backup" in result
+            assert result.endswith("_pre-archive-sweep.sqlite")
+
+    def test_slugify_label(self):
+        from joplin_mcp.tools.backup_database import _slugify_label
+
+        assert _slugify_label("Pre Archive Sweep!") == "pre-archive-sweep"
+        assert _slugify_label("  Bulk__Move  ") == "bulk-move"
+        assert _slugify_label("a" * 100) == "a" * 40
+        # Nothing usable left → informative error.
+        for bad in ("", "   ", "!!!", "---"):
+            with pytest.raises(ValueError):
+                _slugify_label(bad)
+
 
 # ===========================================================================
 # revision_utils
@@ -725,7 +755,7 @@ class TestBulkMoveNotesTool:
 
         await bulk_move_notes.fn(["a" * 32], target_notebook="X")
 
-        mock_backup.assert_called_once_with(force=False)
+        mock_backup.assert_called_once_with(force=False, label="bulk-move")
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
@@ -739,7 +769,7 @@ class TestBulkMoveNotesTool:
 
         await bulk_move_notes.fn(["a" * 32], target_notebook="X", backup="force")
 
-        mock_backup.assert_called_once_with(force=True)
+        mock_backup.assert_called_once_with(force=True, label="bulk-move")
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
@@ -1064,10 +1094,11 @@ class TestBackupDatabaseTool:
             tmp.write(b"x" * 1024)
             tmp.flush()
 
-            result = await backup_database.fn()
+            result = await backup_database.fn(label="pre-archive-sweep")
 
         assert "BACKUP_DATABASE" in result
         assert "SUCCESS" in result
+        assert "LABEL: pre-archive-sweep" in result
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.backup_database.backup_joplin_database")
@@ -1079,6 +1110,18 @@ class TestBackupDatabaseTool:
         mock_db_path.return_value = Path("/nonexistent/database.sqlite")
         mock_backup.return_value = None
 
-        result = await backup_database.fn()
+        result = await backup_database.fn(label="pre-archive-sweep")
 
         assert "FAILED" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.backup_database.backup_joplin_database")
+    async def test_unusable_label_errors_without_touching_db(self, mock_backup):
+        """A label with no alphanumeric content fails fast and never backs up."""
+        from joplin_mcp.tools.backup_database import backup_database
+
+        result = await backup_database.fn(label="!!!")
+
+        assert "FAILED" in result
+        assert "alphanumeric" in result
+        mock_backup.assert_not_called()

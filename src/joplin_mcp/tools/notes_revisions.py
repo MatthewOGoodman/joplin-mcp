@@ -221,6 +221,10 @@ async def manually_backup_note(
     recovery via get_note_history + restore_note_revision or Joplin Desktop's
     "Note History" UI. Use before risky manual edits or bulk operations.
 
+    Writes NO file on disk — the snapshot is an in-Joplin revision of this one
+    note. That is distinct from backup_database, which writes a full copy of
+    the entire Joplin database to ~/JoplinBackup/default/mcp-backups/.
+
     Note: Revisions are also created automatically before title/body overwrites
     by update_note and search_and_bulk_update_execute.
 

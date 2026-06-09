@@ -131,7 +131,7 @@ async def bulk_move_notes(
 
     # Backup database before bulk operation
     if backup != "suppress":
-        backup_joplin_database(force=(backup == "force"))
+        backup_joplin_database(force=(backup == "force"), label="bulk-move")
 
     success_count = 0
     failed_moves: List[str] = []
@@ -630,7 +630,7 @@ async def search_and_bulk_update_execute(
         raise ValueError("At least one update field must be provided")
 
     if backup != "suppress":
-        backup_joplin_database(force=(backup == "force"))
+        backup_joplin_database(force=(backup == "force"), label="bulk-update")
 
     client = get_joplin_client()
     matching_notes, skipped_by_filter = _search_notes(client, query, **filters)
