@@ -103,9 +103,12 @@ FastMCP-based MCP server providing AI assistants access to Joplin notes. Based o
 | `src/joplin_mcp/tools/tags_bulk.py` | **Our additions**: bulk_tag_notes, strip_note_tags |
 | `src/joplin_mcp/tools/trash.py` | **Our additions**: list_trash, restore_from_trash |
 | `src/joplin_mcp/tools/notes_revisions.py` | **Our additions**: get_note_history, restore_note_revision, manually_backup_note |
+| `src/joplin_mcp/tools/notes_files.py` | **Our addition**: update_note_from_file, push_md_file, pull_note_to_file (thin wrappers over `mdsync/`) |
 | `src/joplin_mcp/tools/backup_database.py` | **Our addition**: backup_database |
+| `src/joplin_mcp/imports/` | Upstream (alondmnt): `import_from_file` + MarkdownImporter (bulk file ingest; distinct from mdsync round-trip) |
 | `src/joplin_mcp/tools/field_helpers.py` | **Our addition**: JOPLIN_NOTE_FIELDS registry, _search_notes, _parse_update_params |
 | `src/joplin_mcp/dashboard/` | **Our addition**: dashboard subpackage (config-driven Joplin → Markdown table renderer). See "Dashboard Subpackage" below. |
+| `src/joplin_mcp/mdsync/` | **Our addition**: mdsync subpackage (round-trip .md file ↔ Joplin note; `joplin-mdsync` CLI). See "Mdsync Subpackage" below. |
 
 ### Tool Inventory
 
@@ -118,13 +121,14 @@ FastMCP-based MCP server providing AI assistants access to Joplin notes. Based o
 - **Trash**: `list_trash`
 - **History**: `get_note_history`
 
-**Write operations (18 tools):**
+**Write operations (21 tools):**
 - **Notes**: `create_note`, `update_note`, `edit_note`, `delete_note` (soft-delete), `move_note`
 - **Bulk**: `bulk_move_notes`, `search_and_bulk_update_execute`, `strip_note_tags`, `bulk_tag_notes`
 - **Notebooks**: `create_notebook`, `update_notebook`, `delete_notebook` (soft-delete)
 - **Tags**: `create_tag`, `update_tag`, `delete_tag` (**permanent**), `tag_note`, `untag_note`
 - **Recovery**: `restore_from_trash`, `restore_note_revision`, `manually_backup_note`
 - **Backup**: `backup_database`
+- **File round-trip (mdsync)**: `update_note_from_file`, `push_md_file`, `pull_note_to_file` (pull is read-only on Joplin but writes local files; all assume server and files share a host)
 
 ### Key Patterns
 
@@ -196,6 +200,32 @@ Consumer projects own their config files; joplin-mcp does not track or reference
 - `markdowns/plans_completed/CLAUDE.PLANS_20260507_dashboard_script_mini_plan.md` — seed mini-plan for the subpackage
 - `markdowns/plans_completed/CLAUDE.PLANS_20260515_dashboard-config-schema-validation.md` — schema validation + `--validate` + symlink-discovery
 
+### Mdsync Subpackage
+
+The `joplin_mcp.mdsync` subpackage round-trips a local .md file ↔ a Joplin note. Primary workflow is **pull-edit-update**: pull a note to a file, edit locally (md_tools, editors, Claude Code), update it back. File bytes travel **verbatim** — user content (including frontmatter) is never parsed or re-serialized; bookkeeping lives in a fenced `mdsync:` block spliced into the file's frontmatter by exact line surgery.
+
+**Layout:**
+
+| File | Contents |
+|------|----------|
+| `mdsync/block.py` | `SyncMeta`; fenced-block + drift-region line splice; `body_hash`; `canonical_body` |
+| `mdsync/transport.py` | The three verbs (`update_file`, `push_file`, `pull_note`), shared by CLI + MCP tools |
+| `mdsync/cli.py` | `joplin-mdsync update|push|pull` entry point (bare `<file>` = update) |
+| `tools/notes_files.py` | Thin MCP wrappers: `update_note_from_file`, `push_md_file`, `pull_note_to_file` |
+
+**The block** (inside the file's frontmatter, `# mdsync-begin/end` comment fences): API-verbatim keys `id`, `title`, `parent_id`, `tags` + `notebook` (name, informational — the API routes only by `parent_id`), `synced`, `prior_Joplin_hash`, `current_Joplin_hash`, `markdown_bak`. Title round-trips via the block (H1 never touched — avoids the literal-`#` external-editor gotcha).
+
+**Verbs (all GET first):**
+- `update` (default): the only verb that drift-checks. Drift = `prior_Joplin_hash` (body hash at last sync point; refreshed by every successful GET/PUT) ≠ just-in-time hash of the fetched remote body. On drift: revision backup, PUT anyway, warning leads the payload AND a deletable fenced drift region (warning + unified diff; `--no-diff`) is persisted at the top of the body — never pushed, excluded from hashes, auto-dropped on next rewrite. Tags: `tags:` line present → reconciled onto the note (missing tags created); line absent → untouched (the PUT cannot affect tags); `[]` → remove all.
+- `push`: create-only; refuses if the note exists (bound id, or exact-title match in target notebook) naming both next steps; `--force` clobbers in place (revision backup, no drift ceremony) and binds unbound files.
+- `pull`: note → file; local unsynced edits are backed up to `<stem>_<ts>.md.bak` and recorded as `markdown_bak:` in the block.
+
+**Known gap (transient):** md_tools currently strips frontmatter fences on section ops, breaking the binding — recoverable via `pull --note-id <id>` (the mangled file is `.bak`ed). Fix is staged as next action in claude-wrangler.
+
+**Tests:** `tests/test_mdsync_{block,transport,cli}.py` + `tests/fixtures/mdsync_*.md` (mocked joppy client; byte-identity of user YAML is the load-bearing assertion).
+
+**Plan:** `markdowns/plans_draft/` → archived on commit (mini-plan iterated via /framing + adversarial agent review; drift model and verb semantics user-ruled 2026-06-05/06).
+
 ## Joplin API Notes
 
 **Unexposed capabilities** worth knowing about:
@@ -207,11 +237,11 @@ Consumer projects own their config files; joplin-mcp does not track or reference
 
 Active work is tracked in [STATUS.md](STATUS.md) above. The following are durable design notes — problem statements, proposed solutions, rejected alternatives — that outlive the threads they came from. They serve as reference material when the corresponding STATUS.md thread is picked up.
 
-### Design: joplin-dashboard global discoverability (wrapper + manifest.txt)
+### Design: joplin-dashboard global discoverability (wrapper + claude-wrangler-manifest.txt)
 
 **Problem.** The `joplin-dashboard` CLI is only on PATH while the `joplin-mcp` conda env is active. Consumer projects (e.g. `~/projects/dev/job_search/`) want to invoke it from any non-interactive shell without per-call conda activation. Hardcoding the env's bin path (`~/miniforge3/envs/joplin-mcp/bin/joplin-dashboard`) would make the wrapper machine-specific (assumes miniforge install path AND env name).
 
-**Selected solution.** Add a tracked wrapper at `bin/joplin-dashboard` that resolves the env path dynamically at invocation time via `conda info --base`. Add a `manifest.txt` so claude-wrangler's universal symlink installer (`~/projects/dev/claude-wrangler/install.sh`) creates a symlink at `~/.claude/joplin-dashboard` (already on user's PATH).
+**Selected solution.** Add a tracked wrapper at `bin/joplin-dashboard` that resolves the env path dynamically at invocation time via `conda info --base`. Add a `claude-wrangler-manifest.txt` so claude-wrangler's universal symlink installer (`~/projects/dev/claude-wrangler/install.sh`) creates a symlink at `~/.claude/joplin-dashboard` (already on user's PATH).
 
 **Approaches considered and rejected:**
 
@@ -245,7 +275,7 @@ exec "$ENV_BIN" "$@"
 ```
 `chmod +x bin/joplin-dashboard` after creation.
 
-`manifest.txt`:
+`claude-wrangler-manifest.txt`:
 ```
 ~/.claude/joplin-dashboard:bin/joplin-dashboard
 ```
