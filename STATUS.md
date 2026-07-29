@@ -77,21 +77,11 @@ Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/
 - **Backlog item possibly mis-filed.** A blind regrouping pass noted that `update_notebook(parent_id)` under "Fork enhancements" is the sibling of Issue #21's `notebook_name` on `update_note` — the same hierarchy-move surface — so it may belong with the upstream-contributions thread rather than the fork-local backlog. Left in place; needs a call on whether it is an upstream PR or a fork-local addition.
 - **No prioritization rubric exists.** RICE scoring this pass was uncalibrated. An interactive run can bootstrap `PRIORITIZATION_RUBRIC.md`; autonomous runs never author it.
 
-### Review CLAUDE.md now!  [implement]
-
-
-#### Run `/claude-md-review`  [ ]
-start: 2026-07-28 15:58; update: 2026-07-28 15:58
-CLAUDE.md was brought to structural compliance autonomously on 2026-07-28, but three things need a human call before it can be considered resolved.
-- **`## Loose Ends` is non-empty.** The five "Design:" sections were quarantined there verbatim rather than guessed into a facet — they are durable rationale for features that are mostly NOT yet implemented, which fits neither `Learnings → Design Decisions` (scoped to implemented features) nor `Reference → Passive`. The inline `(NEEDS-REVIEW: …)` marker there carries the two candidate resolutions.
-- **The file carries no schema version stamp.** Autonomous passes never write one; only a full interactive review that resolves everything may stamp it. Until then this thread keeps re-raising.
-- **Facets worth populating from reality.** `Environment → Software` and `Architecture → Code` were filled by relocation, not review; `Reference → Project Docs` and `Reference → Active` were written fresh this run and should be checked.
-
 ## 3. Inactive Threads
 
 ### joplin-dashboard global discoverability  [queued]
 
-Wrapper at `bin/joplin-dashboard` + a `claude-wrangler-manifest.txt` entry so the CLI is on PATH from any non-conda shell. Design + rationale in `CLAUDE.md` → "Design: joplin-dashboard global discoverability". An interim hardcoded symlink is already in place from a job_search session; the installer will warn-and-skip on it unless run with `--force`.
+Wrapper at `bin/joplin-dashboard` + a `claude-wrangler-manifest.txt` entry so the CLI is on PATH from any non-conda shell. Design rationale — including the drafted wrapper script and the five rejected alternatives — in `markdowns/DESIGN_NOTES.md` → "Design: joplin-dashboard global discoverability". An interim hardcoded symlink is already in place from a job_search session; the installer will warn-and-skip on it unless run with `--force`.
 
 #### Author the dynamic-resolution wrapper  [ ]
 
@@ -141,7 +131,7 @@ The full suite reports 603 passed with these 5 failing; they are unrelated to re
 
 ### Upstream contributions to alondmnt/joplin-mcp  [queued]
 
-PR #23 merged 2026-04-17 (`restore_from_trash` + `find_notes(trash=True)`). Two issues alondmnt opened remain, both reflecting his preference for extending existing interfaces over adding tools. Workflow: branch from `upstream/main` as `pr/<topic>`, minimal and focused — see CLAUDE.md "Upstream Contribution Workflow".
+PR #23 merged 2026-04-17 (`restore_from_trash` + `find_notes(trash=True)`). Two issues alondmnt opened remain, both reflecting their preference for extending existing interfaces over adding tools. Workflow: branch from `upstream/main` as `pr/<topic>`, minimal and focused — see CLAUDE.md "Upstream Contribution Workflow".
 
 #### Issue #21 — notebook_name on update_note  [ ]
 
@@ -170,7 +160,7 @@ Two tracked scratch files have no permanent home; decide retention.
 
 ### Upstream sync strategy  [idea]
 
-How to pull alondmnt's `upstream/main` changes onto our `main` and `feature/dev`. Our 12 tools are additive, but `fastmcp_server.py` and `formatting.py` carry modifications that could conflict. Open questions in CLAUDE.md → "Design: Upstream sync strategy".
+How to pull alondmnt's `upstream/main` changes onto our `main` and `feature/dev`. No mechanism chosen yet. Our 12 tools are additive, but `fastmcp_server.py` and `formatting.py` carry modifications that could conflict. Open questions and deliberation in `markdowns/DESIGN_NOTES.md` → "Design: Upstream sync strategy".
 
 #### Decide rebase vs merge for the fork  [ ]
 
@@ -182,7 +172,7 @@ Settle the sync mechanism before the divergence grows.
 
 ### CLAUDE.md cross-branch persistence  [idea]
 
-CLAUDE.md disappears on checkout to clean PR branches, so Claude Code loses project context mid-session. The current proposal — a `## PROJ_SHARED_CLAUDE` section extracted to an untracked floater — is provisional and explicitly not final. Proposed design in CLAUDE.md → "Design: CLAUDE.md cross-branch persistence".
+CLAUDE.md disappears on checkout to clean PR branches, so Claude Code loses project context mid-session. The current proposal — a `## PROJ_SHARED_CLAUDE` section extracted to an untracked floater — is provisional and explicitly not final. Proposed design in `markdowns/DESIGN_NOTES.md` → "Design: CLAUDE.md cross-branch persistence".
 
 #### Survey alternatives before implementing  [ ]
 
@@ -194,7 +184,7 @@ The floating-file design should not be built until better options are ruled out.
 
 ### Direct SQLite read layer  [idea]
 
-The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only SQLite layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes. Caveat: assumes the server shares a host with Joplin Desktop. Design considerations in CLAUDE.md → "Design: Direct SQLite read layer".
+The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only SQLite layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes. Caveat: assumes the server shares a host with Joplin Desktop. Design considerations — including the rejected option of contributing filter params upstream to Joplin itself — in `markdowns/DESIGN_NOTES.md` → "Design: Direct SQLite read layer".
 
 #### Frame the hybrid read/write architecture  [ ]
 
@@ -219,7 +209,7 @@ Unranked backlog — scope individually before starting any.
 
 ### MCP packaging / distribution infrastructure  [deferred]
 
-Extract the Docker/install infrastructure from the `extract/mcp-docker-dev` branch into a separate `MatthewOGoodman/mcp-docker-dev` repo as reusable infrastructure for any MCP project. Parked, not started. Context in CLAUDE.md → "Design: MCP packaging / distribution infrastructure".
+Extract the Docker/install infrastructure from the `extract/mcp-docker-dev` branch into a separate `MatthewOGoodman/mcp-docker-dev` repo, as reusable infrastructure for any MCP project. Parked, not started. What is on that branch, and the reasoning, in `markdowns/DESIGN_NOTES.md` → "Design: MCP packaging / distribution infrastructure".
 
 #### Extract Docker and install infrastructure  [ ]
 

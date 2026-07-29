@@ -1,6 +1,10 @@
 # joplin-mcp
 
+
 FastMCP-based MCP server giving AI assistants access to Joplin notes. A fork of alondmnt/joplin-mcp v0.7.1, adding 12 tools (bulk operations, trash, revisions, database backup), a dashboard subpackage that renders Joplin queries to Markdown tables, and an mdsync subpackage that round-trips local `.md` files against Joplin notes.
+
+*Schema: CLAUDE_MD_SCHEMA v2.2 · migrated 2026-07-28*
+
 
 ## Project
 
@@ -29,7 +33,7 @@ The fork exists to carry tools upstream declined to take as-is; see "Upstream Re
 | `extract/mcp-docker-dev` | Snapshot of old monolithic branch. Starting point for extracting Docker/install infrastructure into separate `mcp-docker-dev` repo. Will be destructively edited. | Parked |
 | `feature/bulk-operations-and-api-enhancements` | Original monolithic dev branch. Historical reference only. Do not modify. | Frozen |
 | _(deleted)_ `rebase/upstream-pr` | Former PR #19 branch. Tip was `5777d44`. Full history preserved in `main`. PR record at alondmnt/joplin-mcp#19. | Deleted |
-| `pr/*` | Per-contribution branches for upstream PRs. Created from `upstream/main`, minimal and focused. | Created as needed |
+| `pr/*` | Per-contribution branches for upstream PRs. Created from `upstream/main`, minimal and focused. | Created as needed; `pr/restore-from-trash` is live (shipped PR #23) |
 
 **Workflow:** Develop on `feature/dev`, merge to `main` when ready. For upstream contributions, create `pr/<topic>` branches from `upstream/main` — these are minimal, focused changes matching alondmnt's conventions. Do not mix our fork's extras into PR branches.
 
@@ -38,7 +42,7 @@ The fork exists to carry tools upstream declined to take as-is; see "Upstream Re
 - **Original Repository**: https://github.com/alondmnt/joplin-mcp
 - **Our Fork**: https://github.com/MatthewOGoodman/joplin-mcp
 - **Upstream version**: v0.7.1 (`1a7f40e`)
-- **Our main**: v0.7.1 + 12 new tools (3 commits on top of upstream)
+- **Our main**: v0.7.1 + 12 new tools (4 commits on top of upstream)
 
 ### PR #19 Status (closed 2026-04-06)
 
@@ -121,7 +125,7 @@ How the server is organized and how a request flows through it: the shared infra
 
 Active config: `~/.joplin-mcp.json` (checked first by `auto_discover()`). Must be valid JSON — no comments.
 
-Config search order: `~/.joplin-mcp.json` > `~/.config/joplin-mcp/config.json` > `./joplin-mcp.json`
+Config search order, highest precedence first: `~/.joplin-mcp.json` > `~/.config/joplin-mcp/config.json` > `./joplin-mcp.json`. Each of those three tiers also accepts `.yaml` and `.yml` in place of `.json`, tried in that order (`config.py` `DEFAULT_CONFIG_PATHS`).
 
 MCP server config for Claude Code: global `mcpServers` in `~/.claude.json` — launches `joplin-mcp-server` with env vars for token/host/port.
 
@@ -169,9 +173,9 @@ Consumer projects own their config files; joplin-mcp does not track or reference
 
 **Symlink-discovery:** `joplin-dashboard <name>` (bare name, no path separator, no `.yaml` extension) resolves to `configs/<name>.yaml`; broken symlinks surface as clean errors.
 
-**Backend decision (recorded 2026-05-06):** REST API for v1 via existing joplin-mcp client. Pluggable Loader interface in place; `JoplinSqliteLoader` deferred to v1.5 with documented triggers (sync-index staleness from #11631, OCR-text bug from #12128, or use cases needing Joplin Desktop closed). Verified empirically: `any:1 tag:A tag:B notebook:X notebook:Y` returns `(A∪B)∩(X∪Y)` correctly. See `research_output/2026-05-06_joplin-backend-decision.md`.
+**Backend:** reads go over REST behind a pluggable `Loader` interface — see Learnings → Design Decisions, "Dashboard reads over REST, not SQLite", for why, and for the triggers that would justify a SQLite loader.
 
-**Architectural note:** The dashboard subpackage is technically a REST-API consumer rather than an MCP feature, but lives in joplin-mcp because it reuses joplin-mcp's joppy client wrapper, config/auth handling, install path, and test infrastructure. If it grows beyond what fits cleanly, promote to a sibling repo `joplin-dashboard/`.
+**Why it lives here:** see Learnings → Design Decisions, "The dashboard subpackage lives in this repo".
 
 **Tests:** `tests/test_dashboard_*.py` (matching pytest conventions of the rest of joplin-mcp).
 
@@ -203,7 +207,7 @@ The `joplin_mcp.mdsync` subpackage round-trips a local .md file ↔ a Joplin not
 
 **Tests:** `tests/test_mdsync_{block,transport,cli}.py` + `tests/fixtures/mdsync_*.md` (mocked joppy client; byte-identity of user YAML is the load-bearing assertion).
 
-**Plan:** `markdowns/plans_draft/` → archived on commit (mini-plan iterated via /framing + adversarial agent review; drift model and verb semantics user-ruled 2026-06-05/06).
+**Plan:** `markdowns/plans_completed/CLAUDE.PLANS_20260606_1100_*_MDSYNC_SUBPACKAGE_*.md` — a mini-plan iterated through /framing plus adversarial agent review; the drift model and verb semantics were user-ruled 2026-06-05/06.
 
 ### Project Dir
 
@@ -230,6 +234,21 @@ The `joplin_mcp.mdsync` subpackage round-trips a local .md file ↔ a Joplin not
 | `src/joplin_mcp/dashboard/` | **Our addition**: dashboard subpackage (config-driven Joplin → Markdown table renderer). See "Dashboard Subpackage" below. |
 | `src/joplin_mcp/mdsync/` | **Our addition**: mdsync subpackage (round-trip .md file ↔ Joplin note; `joplin-mdsync` CLI). See "Mdsync Subpackage" below. |
 
+## Standards
+
+### Reproducibility
+
+Dependency versions are constrained in `pyproject.toml`, and the constraint style is deliberate rather than uniform. There is no lockfile — the bounds below are the whole reproducibility story.
+
+- **Python:** `requires-python = ">=3.10"`.
+- **Major-bounded, for the fast-moving MCP stack:** `mcp>=1,<2`, `fastmcp>=2,<3`, `pydantic>=2,<3`, `httpx>=0.24,<1`, `jsonschema>=4.18,<5`. These carry an upper bound because a major bump in any of them is expected to break us. The `jsonschema` floor is specifically `4.18`, the release that made `Draft202012Validator` the default.
+- **Floor-only, for stable libraries:** `joppy`, `PyYAML`, `beautifulsoup4`, `markdownify`, `diff-match-patch`, `python-frontmatter`, `typing-extensions`. A new major here is not expected to break us; if one does, add an upper bound at that point rather than pre-emptively.
+- **Version number tracks upstream.** `version = "0.7.1"` is alondmnt's release, not a fork version — our additions ride on top without bumping it. Read our divergence from git (commits since `1a7f40e`), not from this field.
+
+The install is editable (`pip install -e .`), so a source edit takes effect on the next `/mcp` reload with no reinstall. That is what makes the dev loop work, and it is also why a second, non-editable install of this package (via pipx or similar) would silently break it.
+
+Formatting is NOT enforced to the installed tool versions — see Learnings → Gotchas before running `black` or `ruff --fix` across the tree.
+
 ## Protocols
 
 ### Code Development
@@ -255,6 +274,22 @@ PYTHONPATH=src python -m joplin_mcp.server
 Durable knowledge. Append-only.
 
 ### Design Decisions
+
+#### Dashboard reads over REST, not SQLite
+
+- **Date:** 2026-05-06
+- **Files:** `src/joplin_mcp/dashboard/loader.py`
+- **Problem:** The dashboard needs filtered reads out of Joplin. The REST API does no server-side filtering, so every query overfetches and filters in Python — which argued for reading Joplin's SQLite database directly instead.
+- **Chosen approach:** REST for v1, through the existing joplin-mcp client, behind a pluggable `Loader` interface. Verified empirically that `any:1 tag:A tag:B notebook:X notebook:Y` really does return `(A∪B)∩(X∪Y)`, so REST is expressive enough for the dashboard's queries. Full reasoning in `research_output/2026-05-06_joplin-backend-decision.md`.
+- **Alternatives rejected:** a `JoplinSqliteLoader` — deferred to v1.5 rather than dropped, with explicit triggers that would justify it: sync-index staleness (Joplin issue #11631), the OCR-text bug (#12128), or a use case requiring Joplin Desktop to be closed. The `Loader` interface exists so that swap stays cheap.
+
+#### The dashboard subpackage lives in this repo
+
+- **Date:** 2026-05-06
+- **Files:** `src/joplin_mcp/dashboard/`
+- **Problem:** The dashboard is a REST-API consumer, not an MCP feature — it registers no tools and the MCP server never calls it. On that reading it does not belong in an MCP server's repository.
+- **Chosen approach:** Keep it here anyway, because it reuses this project's joppy client wrapper, config and auth handling, install path, and test infrastructure. Duplicating those in a sibling repo costs more than the conceptual impurity.
+- **Alternatives rejected:** a standalone `joplin-dashboard/` repo — still the right move if the subpackage grows past what fits cleanly here, so treat this as a decision with a known expiry rather than a permanent one.
 
 #### In-process MCP-layer testing via fastmcp.Client
 
@@ -306,6 +341,7 @@ No project-local skills (`.claude/skills/`) are defined. The skills this project
 | `docs/content-privacy.md` | Content-exposure / privacy configuration notes |
 | `docs/enhancement-proposal.md` | Enhancement proposal write-up |
 | `src/joplin_mcp/dashboard/schemas/` | Tracked JSON Schema validators for dashboard configs (`dashboard_config.schema.yaml`, Draft 2020-12) |
+| `markdowns/DESIGN_NOTES.md` | Design rationale for features not yet built — problem, approach chosen, alternatives rejected. Each note pairs with a STATUS.md thread; a note graduates to Learnings → Design Decisions once its feature ships |
 | `markdowns/plans_completed/` | Shipped implementation plans (tracked); referenced from commit messages |
 | `markdowns/session_archive/` | Consumed `SESSION_COMPACT_*.md` files and per-run `SWEPT_*.md` completed-entry archives (tracked) |
 
@@ -331,119 +367,3 @@ Read-on-demand references and external links.
 - **Resources/Attachments**: Full CRUD + OCR text extraction. `joppy` has all methods — unused.
 - **Events API**: Activity feed with cursor-based pagination, 90-day retention.
 - **Search operators**: `title:`, `body:`, `tag:`, `notebook:`, `created:`, `updated:`, `due:`, `type:`, `iscompleted:`, `resource:`, `sourceurl:`, `any:1` (OR), `-` (negation), `*` (wildcard).
-
-## Loose Ends
-
-Transient holding pen — content that is legitimate but not yet placed, awaiting a human call on where it belongs. Drained by `/claude-md-review`; this section is compliant only when empty.
-
-(NEEDS-REVIEW: decide the permanent home for the "Design Notes" subtree below — these are durable problem statements and rejected alternatives for features that are mostly NOT yet implemented, so they do not fit `Learnings → Design Decisions` (scoped to implemented features) and they are too substantive to be a `Reference → Passive` link list. Options: (a) split them — the implemented ones become Design Decisions, the rest move to their STATUS.md threads; (b) keep them together under a new Reference facet for pre-implementation rationale. Needs a human because the schema does not name a facet for durable rationale about unbuilt work, and each STATUS.md thread currently cross-references these sections by name.)
-
-### Design Notes
-
-Active work is tracked in [STATUS.md](STATUS.md) above. The following are durable design notes — problem statements, proposed solutions, rejected alternatives — that outlive the threads they came from. They serve as reference material when the corresponding STATUS.md thread is picked up.
-
-#### Design: joplin-dashboard global discoverability (wrapper + claude-wrangler-manifest.txt)
-
-**Problem.** The `joplin-dashboard` CLI is only on PATH while the `joplin-mcp` conda env is active. Consumer projects (e.g. `~/projects/dev/job_search/`) want to invoke it from any non-interactive shell without per-call conda activation. Hardcoding the env's bin path (`~/miniforge3/envs/joplin-mcp/bin/joplin-dashboard`) would make the wrapper machine-specific (assumes miniforge install path AND env name).
-
-**Selected solution.** Add a tracked wrapper at `bin/joplin-dashboard` that resolves the env path dynamically at invocation time via `conda info --base`. Add a `claude-wrangler-manifest.txt` so claude-wrangler's universal symlink installer (`~/projects/dev/claude-wrangler/install.sh`) creates a symlink at `~/.claude/joplin-dashboard` (already on user's PATH).
-
-**Approaches considered and rejected:**
-
-- *Hardcoded wrapper* (`exec ~/miniforge3/envs/joplin-mcp/bin/joplin-dashboard "$@"`) — machine-specific.
-- *Install-time generated wrapper, gitignored* — faster per call (no `conda info` subprocess) but requires `install.py` changes and breaks on env rename / conda-flavor switch unless reinstalled. Brittle.
-- *Add env-bin sources to claude-wrangler's manifest format* (e.g., `target:env:joplin-mcp:bin/script`) — extends a generic tool for one symlink. YAGNI.
-- *PATH-prepend the env's bin directory in `.zshenv`* — leaks every env binary to global PATH (joplin-mcp-server, joppy, fastmcp, etc.). Pollution.
-- *pipx install* — would be a SECOND install of joplin-mcp, breaking the editable-install dev sync.
-
-Dynamic-resolution wrapper wins: portable, tracked, works through claude-wrangler's existing installer with no installer changes. Adds ~150ms `conda info --base` subprocess per call — imperceptible for manual regen. Drift-resistant.
-
-**Why no extension to claude-wrangler.** claude-wrangler's `install.sh` requires `source` paths inside the project repo (`SOURCE_PATH="$REPO_DIR/$SOURCE_REL"`). The wrapper-in-repo pattern fits without requiring claude-wrangler changes.
-
-**Files to add when implementing:**
-
-`bin/joplin-dashboard`:
-```bash
-#!/usr/bin/env bash
-# Wrapper that delegates to the env-installed joplin-dashboard CLI.
-# Resolves conda env dynamically; portable across miniforge/anaconda/miniconda.
-set -euo pipefail
-CONDA_BASE="$(conda info --base 2>/dev/null)" || {
-  echo "ERROR: conda not on PATH" >&2; exit 1
-}
-ENV_BIN="$CONDA_BASE/envs/joplin-mcp/bin/joplin-dashboard"
-[[ -x "$ENV_BIN" ]] || {
-  echo "ERROR: $ENV_BIN missing — run 'pip install -e .' in the joplin-mcp env" >&2
-  exit 1
-}
-exec "$ENV_BIN" "$@"
-```
-`chmod +x bin/joplin-dashboard` after creation.
-
-`claude-wrangler-manifest.txt`:
-```
-~/.claude/joplin-dashboard:bin/joplin-dashboard
-```
-
-Then run: `~/projects/dev/claude-wrangler/install.sh --force ~/projects/dev/joplin-mcp` (force overrides the interim symlink documented below).
-
-**Interim workaround currently in place.** A direct symlink was created from the job_search session to unblock dashboard invocation in non-conda shells immediately:
-
-```
-~/.claude/joplin-dashboard → ~/miniforge3/envs/joplin-mcp/bin/joplin-dashboard
-```
-
-Hardcoded and machine-specific. Exists ONLY so job_search could finish testing the dashboard pipeline end-to-end without waiting for the proper wrapper. claude-wrangler's installer will detect this as a "wrong-target symlink" when the wrapper lands and warn-and-skip unless invoked with `--force`. Use `--force` once to overwrite.
-
-#### Design: CLAUDE.md cross-branch persistence (proposed; needs /framing)
-
-**Problem.** CLAUDE.md is tracked on the main dev branch but disappears when checking out other branches (e.g., clean PR branches off `upstream/main`). Claude Code loses project context mid-session.
-
-**Proposed architecture (not final).** CLAUDE.md on `feature/dev` contains a `## PROJ_SHARED_CLAUDE` section with cross-branch content (TODOs, branch strategy, upstream relationship, architecture). This section is the canonical tracked version. Before branch switch, it's extracted to an untracked `PROJ_SHARED_CLAUDE.md` that floats across branches. On return, changes are merged back.
-
-**Proposed design — single untracked floating file with branch-keyed sections:**
-
-```
-# PROJ_SHARED_CLAUDE
-## PROJ_SHARED_CLAUDE_main
-## PROJ_SHARED_CLAUDE_feature/dev
-## PROJ_SHARED_CLAUDE_pr/restore-from-trash
-```
-
-Post-checkout hook uses `md_tools insert` to add/update the section for the current branch. Accumulation works well (new TODOs, notes, context). Edits/deletions to shared content are harder — corrections noted in the branch section, resolved during merge-back on `feature/dev`. Critical for the hook: must NOT overwrite existing content in other branch sections — `md_tools insert` preferred over `cp`.
-
-**Scope-extension note (2026-05-06).** Once Plan 1 (Project State Hygiene — see `claude-wrangler/CLAUDE.md` Active Work) lands, this floating-file design must also carry `STATUS.md`. Either extend to a sibling `PROJ_SHARED_STATUS.md`, or merge both into a single floating file with branch-keyed sections per artifact.
-
-Working proposal only — `/framing` should survey better solutions (post-checkout hook, separate tracked branch) before implementing.
-
-#### Design: Upstream sync strategy (open questions)
-
-PR #23 merged into alondmnt/joplin-mcp on 2026-04-17 (`restore_from_trash` + `find_notes(trash=True)` + docstring fixes). Our `main` and `feature/dev` don't have these changes from upstream's side. Open questions before settling on a sync workflow:
-
-- Is our code structure clean enough to rebase on upstream? Our 12 tools in `tools/*.py` are additive, but `fastmcp_server.py` and `formatting.py` have modifications.
-- `git merge upstream/main` vs `git rebase --onto upstream/main` for our branches?
-- How to handle divergence if alondmnt modifies files we also modified?
-- Any other upstream changes since v0.7.1 besides PR #23?
-
-Affects both `main` and `feature/dev`. The goal is to pull upstream changes readily.
-
-#### Design: MCP packaging / distribution infrastructure (parked)
-
-The `extract/mcp-docker-dev` branch (snapshot of old monolithic branch) contains Docker development toolkit, deployment modes, install enhancements, and config management (`mcp-config-manager.sh`). Original plan was to extract into separate `MatthewOGoodman/mcp-docker-dev` repo as reusable infrastructure for any MCP project. Status: parked, not started.
-
-#### Design: Direct SQLite read layer
-
-The Joplin REST API has no server-side filtering — no WHERE-clause params, no field-value filters on collection endpoints. All filtering is done client-side in Python after fetching full result sets via joppy. This affects trash listing, notebook-scoped queries, todo filtering, and any field-based search.
-
-**Two options:**
-
-- **Option A (preferred): Add SQLite reader directly to joplin-mcp.** Read-only queries against `~/.config/joplin-desktop/database.sqlite` for efficient filtered reads; keep joppy/REST API for writes (which need Joplin's sync/indexing). Belongs in joplin-mcp, not in joppy — joppy is a REST client and has no SQLite basis.
-- **Option B: Contribute filtering params to Joplin's REST API.** Would require forking/PR to `laurent22/joplin` itself — much heavier overhead for uncertain acceptance. The API appears intentionally minimal.
-
-**Design considerations for hybrid SQLite-read / REST-write:**
-
-- SQLite reads return note IDs; writes pass those IDs directly to joppy REST calls. The MCP agent never handles raw ID lists — the tool internally pipes SQLite query results to REST update calls.
-- Preview/execute pattern needs a proper safety check. Current `first_title` + `expected_count` verification is weak. Should compare the exact set of note IDs between preview and execute (e.g., hash of sorted ID list) to catch any drift.
-- May need a dry-run mode for updates: SQLite query shows what would change, user confirms, then REST applies. Similar to current `search_and_bulk_update_preview` but with accurate counts from SQLite rather than overfetched/post-filtered results.
-
-**Caveat:** Direct SQLite access assumes local filesystem (same host as Joplin Desktop). Remote HTTP MCP transport would break this, but would also break `backup_database` and other filesystem-dependent features — a broader re-engineering at that point.
