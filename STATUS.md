@@ -1,6 +1,8 @@
 # STATUS
 
-*Last checkpoint: — | Last prioritized: 2026-07-28 15:58 [auto] | Last shutdown: 2026-06-09 14:45 | Last cleanup: 2026-07-28 15:58*
+*Last checkpoint: 2026-08-01 22:56 | Last prioritized: 2026-07-28 15:58 [auto] | Last shutdown: 2026-08-01 23:00 | Last cleanup: 2026-07-28 15:58*
+
+@markdowns/SESSION_COMPACT_7736159a_20260801_230000.md
 
 ## 0. Project Overview
 
@@ -268,4 +270,28 @@ Survey how other repos keep a context file alive across branch switches.
 
 ## 7. Inbox
 
-Empty — all items routed by the 2026-07-28 cleanup.
+### Branch cleanup and upstream v0.10.0 sync  [hand-off]
+
+start: 2026-11-05 11:49; update: 2026-11-05 11:49
+Prune merged and frozen branches, then bring main and feature/dev forward from v0.7.1 to upstream v0.10.0.
+- Hand-off from a job_search session; branch assessment done read-only on 2026-11-05.
+- Delete `pr/restore-from-trash` (shipped as #23); tag-or-delete the frozen bulk-ops branch; keep `extract/mcp-docker-dev` only while the Docker-extraction thread is live.
+- Local `upstream/main` is stale (v0.7.1); fetch first. Compare upstream's tools against the fork's 12 before merging.
+PLAN: markdowns/plans_draft/HANDOFF_20261105_114933_branch-cleanup-upstream-sync.md
+
+#### Thread-vs-design-note content split  [ ]
+
+start: 2026-08-01 22:50; update: 2026-08-01 22:50
+[CLAUDE.md: Design Decision] User-ruled convention established 2026-07-28 when `markdowns/DESIGN_NOTES.md` was created.
+- The rule: a STATUS.md thread carries the FINAL decision plus a brief rationale; the full sequence of decision-making and the alternatives considered belong in `markdowns/DESIGN_NOTES.md` ONLY.
+- Corollary already applied: a design note graduates out of the doc once its feature ships — the settled rationale moves to CLAUDE.md Learnings → Design Decisions, which is scoped to implemented work.
+- Worth recording as a durable Design Decision because the natural failure mode is the opposite: folding deliberation back into the thread, which is what an earlier pass of this session did before being corrected.
+
+#### md_tools replace re-levels inserted headings  [ ]
+
+start: 2026-08-01 22:50; update: 2026-08-01 22:50
+[CLAUDE.md: Gotcha] Surfaced 2026-07-28 during the STATUS.md schema migration.
+- `md_tools replace --stdin` normalizes the heading levels of the body it writes to first-child depth. Passing `#### Foo` as the new body of a `##` section silently lands it as `### Foo`.
+- That matters here because STATUS_SCHEMA puts §4 / §5 / §6 entries at `####` directly under `##` — so the canonical shape is exactly the case the normalizer rewrites. Sections 4 and 6 came out one level too shallow and had to be corrected afterwards with `md_tools subst` on each heading line.
+- Mitigation: after a `replace` that carries headings, verify with `md_tools list` and fix levels with `subst`; or build the section with `insert` per entry instead of one `replace`.
+- May also deserve a hand-off to claude-wrangler's "md_tools" thread — it is tool behavior, not a joplin-mcp fact.
