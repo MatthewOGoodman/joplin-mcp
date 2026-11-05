@@ -30,10 +30,8 @@ The fork exists to carry tools upstream declined to take as-is; see "Upstream Re
 |--------|---------|--------|
 | `main` | Clean codebase. alondmnt v0.7.1 modular structure + our 12 tools + fixes. Always deployable. | Active |
 | `feature/dev` | Ongoing development. CLAUDE.md, new features, fixes. Merges to main. | Active, primary work branch |
-| `extract/mcp-docker-dev` | Snapshot of old monolithic branch. Starting point for extracting Docker/install infrastructure into separate `mcp-docker-dev` repo. Will be destructively edited. | Parked |
-| `feature/bulk-operations-and-api-enhancements` | Original monolithic dev branch. Historical reference only. Do not modify. | Frozen |
-| _(deleted)_ `rebase/upstream-pr` | Former PR #19 branch. Tip was `5777d44`. Full history preserved in `main`. PR record at alondmnt/joplin-mcp#19. | Deleted |
-| `pr/*` | Per-contribution branches for upstream PRs. Created from `upstream/main`, minimal and focused. | Created as needed; `pr/restore-from-trash` is live (shipped PR #23) |
+| `pr/*` | Per-contribution branches for upstream PRs. Created from `upstream/main`, minimal and focused; deleted once the PR merges. | Created as needed; none open |
+| tag `archive/bulk-operations-monolith` | `3de13d4`: the original monolithic dev branch, whose tools were re-ported onto v0.7.1 as `main`. It also holds the Docker/install work (dev/prod Dockerfile, Makefile, `docker_build.py`, `switch_mode.py`, `DOCKER_DEV.md`) that the "MCP packaging / distribution infrastructure" thread would start from. Read-only reference. | Tag, pushed to `origin` |
 
 **Workflow:** Develop on `feature/dev`, merge to `main` when ready. For upstream contributions, create `pr/<topic>` branches from `upstream/main` — these are minimal, focused changes matching alondmnt's conventions. Do not mix our fork's extras into PR branches.
 

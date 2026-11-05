@@ -211,13 +211,13 @@ Unranked backlog — scope individually before starting any.
 
 ### MCP packaging / distribution infrastructure  [deferred]
 
-Extract the Docker/install infrastructure from the `extract/mcp-docker-dev` branch into a separate `MatthewOGoodman/mcp-docker-dev` repo, as reusable infrastructure for any MCP project. Parked, not started. What is on that branch, and the reasoning, in `markdowns/DESIGN_NOTES.md` → "Design: MCP packaging / distribution infrastructure".
+Extract the Docker/install infrastructure from the `archive/bulk-operations-monolith` tag (`3de13d4`) into a new `MatthewOGoodman/mcp-docker-dev` repo, not yet created, as reusable infrastructure for any MCP project. Parked, not started. What the tag holds, and the reasoning, in `markdowns/DESIGN_NOTES.md` → "Design: MCP packaging / distribution infrastructure".
 
 #### Extract Docker and install infrastructure  [ ]
 
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Move the parked snapshot branch's contents into their own repo.
-- [ ] Extract from `extract/mcp-docker-dev` into the separate repo
+start: 2026-05-15 22:00; update: 2026-11-05 14:54
+Move the archived snapshot's reusable pieces into their own repo.
+- [ ] Extract from the `archive/bulk-operations-monolith` tag into the new repo; upstream now ships its own Dockerfile, `bootstrap.py` and PyPI/registry publishing, so scope this to what upstream lacks (hot-reload dev container, deployment switcher, `DOCKER_DEV.md` lessons)
 
 ### Joppy `utcfromtimestamp` deprecation warning  [deferred]
 
@@ -275,8 +275,8 @@ Survey how other repos keep a context file alive across branch switches.
 start: 2026-11-05 11:49; update: 2026-11-05 11:49
 Prune merged and frozen branches, then bring main and feature/dev forward from v0.7.1 to upstream v0.10.0.
 - Hand-off from a job_search session; branch assessment done read-only on 2026-11-05.
-- Delete `pr/restore-from-trash` (shipped as #23); tag-or-delete the frozen bulk-ops branch; keep `extract/mcp-docker-dev` only while the Docker-extraction thread is live.
-- Local `upstream/main` is stale (v0.7.1); fetch first. Compare upstream's tools against the fork's 12 before merging.
+- Branch cleanup done 2026-11-05: `pr/restore-from-trash`, the bulk-ops monolith branch and `extract/mcp-docker-dev` deleted locally and on origin; tag `archive/bulk-operations-monolith` (`3de13d4`) keeps the monolith and Docker work reachable. Remote branches are now `main` and `feature/dev`.
+- Upstream fetched (v0.10.0, `b84c313`, 124 commits ahead). Sync mini-plan written, not yet approved: `markdowns/plans_draft/PLAN_upstream-v0.10.0-sync.md`. Upstream implemented #21 and #22 itself, so the "Upstream contributions" thread closes when the sync lands.
 PLAN: markdowns/plans_draft/HANDOFF_20261105_114933_branch-cleanup-upstream-sync.md
 
 #### Thread-vs-design-note content split  [ ]
