@@ -1,8 +1,11 @@
 """Notebook tools for Joplin MCP."""
-from typing import Annotated, Optional
+import json
+from collections import Counter
+from typing import Annotated, Dict, Optional
 
 from pydantic import Field
 
+from joplin_mcp.config import get_config
 from joplin_mcp.fastmcp_server import (
     ItemType,
     JoplinIdType,
@@ -13,76 +16,230 @@ from joplin_mcp.fastmcp_server import (
     format_item_list,
     format_update_success,
     get_joplin_client,
-    invalidate_notebook_map_cache,
 )
+from joplin_mcp.notebook_utils import get_notebook_id_by_name, notebook_resolver
+
+
+# Joplin stores folder icons as a JSON string with type=1 for emoji.
+# Length cap leaves room for the longest standard ZWJ emoji sequences
+# (kiss-with-skin-tones can reach ~10 codepoints; cap leaves headroom)
+# without admitting prose.
+_EMOJI_MAX_LEN = 16
+_EMOJI_ERROR = (
+    "emoji must be a short emoji glyph; got an empty/whitespace or "
+    "letter/digit-containing string, or one over "
+    f"{_EMOJI_MAX_LEN} characters"
+)
+
+
+def _build_icon_payload(emoji: str) -> str:
+    """Convert an `emoji` parameter to Joplin's icon-field wire format.
+
+    Empty string is passed through unchanged (sentinel for "clear icon").
+    Other strings are validated and serialised as a type=1 emoji icon.
+    """
+    if emoji == "":
+        return ""
+
+    if (
+        not emoji.strip()
+        or len(emoji) > _EMOJI_MAX_LEN
+        or any(c.isascii() and c.isalnum() for c in emoji)
+    ):
+        raise ValueError(_EMOJI_ERROR)
+
+    return json.dumps(
+        {"type": 1, "emoji": emoji, "name": ""},
+        ensure_ascii=False,
+    )
 
 
 # === NOTEBOOK TOOLS ===
 
 
 @create_tool("list_notebooks", "List notebooks")
-async def list_notebooks() -> str:
-    """List all notebooks/folders in your Joplin instance.
+async def list_notebooks(
+    verbose: Annotated[
+        bool,
+        Field(description="Also return icon, parent_id and timestamps (default: False)"),
+    ] = False,
+) -> str:
+    """List all notebooks/folders in your Joplin instance, with note counts.
 
-    Retrieves and displays all notebooks (folders) in your Joplin application.
+    Returns each notebook's id, title, path and note_count. Pass verbose=True
+    to also get the emoji icon, parent_id and timestamps -- rarely needed, and
+    on a large collection they roughly double the size of this response.
 
     Returns:
-        str: Formatted list of all notebooks including title, unique ID, parent notebook (if sub-notebook), and creation date.
+        str: Formatted list of all notebooks including title, unique ID, path, and note count.
     """
     client = get_joplin_client()
-    fields_list = "id,title,created_time,updated_time,parent_id"
+    fields_list = "id,title,created_time,updated_time,parent_id,icon"
     notebooks = client.get_all_notebooks(fields=fields_list)
-    return format_item_list(notebooks, ItemType.notebook)
+    if get_config().has_notebook_allowlist:
+        notebooks = notebook_resolver.filter_accessible(
+            notebooks, allowlist_entries=get_config().notebook_allowlist
+        )
+    # One bulk fetch of ids and parents, counted in memory. Querying per
+    # notebook would be 40+ round-trips on a call agents make to resolve names.
+    try:
+        notes = client.get_all_notes(fields="id,parent_id")
+        note_counts: Optional[Dict[str, int]] = Counter(
+            getattr(note, "parent_id", "") for note in notes
+        )
+    except Exception:
+        note_counts = None
+
+    return format_item_list(
+        notebooks, ItemType.notebook, note_counts=note_counts, verbose=verbose
+    )
 
 
 @create_tool("create_notebook", "Create notebook")
 async def create_notebook(
     title: Annotated[RequiredStringType, Field(description="Notebook title")],
-    parent_id: Annotated[
-        Optional[str], Field(description="Parent notebook ID (optional)")
+    parent_name: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Parent notebook name or path (e.g., 'Work' or 'Projects/Work'). "
+                "Omit for a top-level notebook."
+            )
+        ),
+    ] = None,
+    emoji: Annotated[
+        Optional[str],
+        Field(description="Single emoji glyph to use as the notebook's icon (optional)"),
     ] = None,
 ) -> str:
     """Create a new notebook (folder) in Joplin to organize your notes.
 
     Creates a new notebook that can be used to organize and contain notes. You can create
-    top-level notebooks or sub-notebooks within existing notebooks.
+    top-level notebooks or sub-notebooks within existing notebooks, optionally with an
+    emoji icon shown in Joplin's sidebar.
+
+    Notebook can be specified by name or path:
+    - "Work" - matches notebook named "Work" (must be unique)
+    - "Projects/Work" - matches "Work" notebook inside "Projects"
 
     Returns:
         str: Success message containing the created notebook's title and unique ID.
 
     Examples:
         - create_notebook("Work Projects") - Create a top-level notebook
-        - create_notebook("2024 Projects", "work_notebook_id") - Create a sub-notebook
+        - create_notebook("2024 Projects", "Work") - Create a sub-notebook under "Work"
+        - create_notebook("Tasks", "Projects/Work") - Create a sub-notebook by path
+        - create_notebook("Tasks", emoji="🎯") - Create a notebook with an emoji icon
     """
 
-    client = get_joplin_client()
-    notebook_kwargs = {"title": title}
-    if parent_id:
-        notebook_kwargs["parent_id"] = parent_id.strip()
+    resolved_parent_id: Optional[str] = None
+    if parent_name is not None:
+        resolved_parent_id = get_notebook_id_by_name(parent_name)
 
-    notebook = client.add_notebook(**notebook_kwargs)
-    # Invalidate notebook path cache to reflect new structure immediately
-    invalidate_notebook_map_cache()
+    if get_config().has_notebook_allowlist:
+        if resolved_parent_id:
+            notebook_resolver.validate_access(
+                resolved_parent_id,
+                allowlist_entries=get_config().notebook_allowlist,
+            )
+        else:
+            raise ValueError("Notebook not accessible")
+
+    notebook_kwargs = {"title": title}
+    if resolved_parent_id:
+        notebook_kwargs["parent_id"] = resolved_parent_id
+    if emoji is not None:
+        notebook_kwargs["icon"] = _build_icon_payload(emoji)
+
+    notebook = notebook_resolver.add_notebook(**notebook_kwargs)
     return format_creation_success(ItemType.notebook, title, str(notebook))
 
 
 @create_tool("update_notebook", "Update notebook")
 async def update_notebook(
     notebook_id: Annotated[JoplinIdType, Field(description="Notebook ID to update")],
-    title: Annotated[RequiredStringType, Field(description="New notebook title")],
+    title: Annotated[
+        Optional[str],
+        Field(description="New notebook title (optional)", min_length=1),
+    ] = None,
+    emoji: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "New emoji icon for the notebook (optional). "
+                "Pass an empty string to clear an existing icon."
+            )
+        ),
+    ] = None,
+    parent_name: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Move the notebook under another parent by name or path "
+                "(e.g., 'Projects/Work'), or '/' to move it to top-level. "
+                "Omit to leave the parent unchanged."
+            )
+        ),
+    ] = None,
 ) -> str:
-    """Update an existing notebook.
+    """Update an existing notebook's title, emoji icon, or parent.
 
-    Updates the title of an existing notebook. Currently only the title can be updated.
+    Pass `emoji=""` to clear an existing icon. Pass `parent_name="/"` to move
+    the notebook to top-level, or a name/path to move it under another parent.
+    At least one of `title`, `emoji`, or `parent_name` must be provided.
+
+    Parent destination can be specified by name or path:
+    - "Work" - matches notebook named "Work" (must be unique)
+    - "Projects/Work" - matches "Work" notebook inside "Projects"
+    - "/" - move to top-level
 
     Returns:
         str: Success message confirming the notebook was updated.
+
+    Examples:
+        - update_notebook("0123...", title="Archive") - Rename a notebook
+        - update_notebook("0123...", emoji="🎯") - Set or replace the emoji icon
+        - update_notebook("0123...", emoji="") - Clear the emoji icon
+        - update_notebook("0123...", parent_name="Projects/Work") - Move under another parent
+        - update_notebook("0123...", parent_name="/") - Move to top-level
     """
-    client = get_joplin_client()
-    client.modify_notebook(notebook_id, title=title)
-    # Invalidate cache in case the notebook moved/renamed
-    invalidate_notebook_map_cache()
-    return format_update_success(ItemType.notebook, notebook_id)
+    update_kwargs = {}
+    if title is not None:
+        update_kwargs["title"] = title
+    if emoji is not None:
+        update_kwargs["icon"] = _build_icon_payload(emoji)
+
+    if parent_name is not None:
+        if parent_name == "/":
+            # Moving to top-level under an allowlist would let the agent
+            # silently move a notebook out of policy-enforced scope -- mirrors
+            # the create_notebook top-level block. No allowlist == free reign.
+            if get_config().has_notebook_allowlist:
+                raise ValueError("Notebook not accessible")
+            new_parent_id = ""
+        else:
+            new_parent_id = get_notebook_id_by_name(parent_name)
+            if get_config().has_notebook_allowlist:
+                notebook_resolver.validate_access(
+                    new_parent_id,
+                    allowlist_entries=get_config().notebook_allowlist,
+                )
+        if notebook_resolver.would_create_cycle(notebook_id, new_parent_id):
+            raise ValueError(
+                "Cannot move a notebook under itself or one of its descendants"
+            )
+        update_kwargs["parent_id"] = new_parent_id
+
+    if not update_kwargs:
+        raise ValueError("At least one field must be provided for update")
+
+    if get_config().has_notebook_allowlist:
+        notebook_resolver.validate_access(
+            notebook_id, allowlist_entries=get_config().notebook_allowlist
+        )
+
+    notebook_resolver.modify_notebook(notebook_id, **update_kwargs)
+    return format_update_success(ItemType.notebook, notebook_id, title=title)
 
 
 @create_tool("delete_notebook", "Delete notebook")
@@ -91,14 +248,28 @@ async def delete_notebook(
 ) -> str:
     """Delete a notebook from Joplin (moves to trash).
 
-    Moves a notebook and its contained notes to Joplin's trash. Recoverable
-    via list_trash and restore_from_trash, or Joplin Desktop's trash interface.
+    Soft-deletes a notebook and its contained notes by moving them to
+    Joplin's trash. Trashed items can be found with find_notes(trash=True)
+    and restored with restore_from_trash(). This action is reversible (unlike
+    delete_tag, which is permanent).
 
     Returns:
         str: Success message confirming the notebook was moved to trash.
+
+    Raises:
+        ValueError: if the notebook ID does not exist.
     """
     client = get_joplin_client()
-    client.delete_notebook(notebook_id)
-    # Invalidate cache since structure changed
-    invalidate_notebook_map_cache()
+
+    if get_config().has_notebook_allowlist:
+        notebook_resolver.validate_access(
+            notebook_id, allowlist_entries=get_config().notebook_allowlist
+        )
+
+    # Joplin's API silently 200s on DELETE for a missing notebook, so the
+    # tool would otherwise report SUCCESS for a no-op. GET first to surface
+    # the 404 as a sanitised ValueError via with_client_error_handling.
+    client.get_notebook(notebook_id, fields="id")
+
+    notebook_resolver.delete_notebook(notebook_id)
     return format_delete_success(ItemType.notebook, notebook_id)

@@ -19,12 +19,11 @@ By default, the MCP server may expose note content to AI systems, which raises l
 You can configure different exposure levels for different contexts:
 
 ### `search_results`
-Controls content visibility in search operations:
+Controls content visibility in every search and listing operation:
 - `find_notes`
 - `find_notes_with_tag`
 - `find_notes_in_notebook`
 - `get_all_notes`
-- Search results from other operations
 
 **Default:** `preview`
 
@@ -34,12 +33,7 @@ Controls content visibility when retrieving specific notes:
 
 **Default:** `full`
 
-### `listings`
-Controls content visibility in note listings:
-- `find_notes_in_notebook`
-- `find_notes_with_tag`
-
-**Default:** `none`
+These two are the only contexts.
 
 ## Smart TOC Controls
 
@@ -58,6 +52,21 @@ Global toggle for smart TOC behavior.
 
 **Default:** `true`
 
+### `output_hints`
+Worked follow-up calls appended to results: the `NEXT_STEPS` block under a
+TOC, and the `NEXT_PAGE` line in paginated searches.
+- `false`: results carry data only. The parameters these examples demonstrate
+  are already in the tool schema, so for a capable model they are repetition
+  charged on every call
+- `true`: restore them. Smaller models attend to an example next to the result
+  more reliably than to a schema defined earlier in the context
+
+This is a server setting rather than a per-call parameter on purpose: a model
+weak enough to need the examples is not reliable at asking for them, while
+whoever deploys the server knows which model it serves.
+
+**Default:** `false`
+
 ## Configuration Examples
 
 ### 1. Privacy-Focused Configuration
@@ -66,7 +75,6 @@ Global toggle for smart TOC behavior.
   "content_exposure": {
     "search_results": "none",
     "individual_notes": "none",
-    "listings": "none",
     "max_preview_length": 0,
     "smart_toc_threshold": 2000,
     "enable_smart_toc": false
@@ -80,7 +88,6 @@ Global toggle for smart TOC behavior.
   "content_exposure": {
     "search_results": "preview",
     "individual_notes": "full",
-    "listings": "none",
     "max_preview_length": 300,
     "smart_toc_threshold": 2000,
     "enable_smart_toc": true
@@ -94,13 +101,48 @@ Global toggle for smart TOC behavior.
   "content_exposure": {
     "search_results": "full",
     "individual_notes": "full",
-    "listings": "preview",
     "max_preview_length": 500,
     "smart_toc_threshold": 2000,
     "enable_smart_toc": true
   }
 }
 ```
+
+### 4. Token-Frugal Configuration
+
+```json
+{
+  "content_exposure": {
+    "search_results": "none",
+    "individual_notes": "full",
+    "smart_toc_threshold": 1000,
+    "enable_smart_toc": true
+  }
+}
+```
+
+The two settings work on different responses, so it's worth being precise
+about which does what:
+
+- `search_results` governs listing size. Measured on a 20-result
+  `find_notes_in_notebook` of 3000-character notes (~3200 tokens at the
+  defaults): `"none"` drops previews entirely for ~44% less, and
+  `"preview"` with `"max_preview_length": 100` keeps snippets for ~31%
+  less. `max_preview_length` is omitted above because `"none"` turns
+  previews off, which makes the length irrelevant.
+- `smart_toc_threshold` governs individual `get_note` responses only. It
+  cannot change listing size. Lowering it to 1000 means mid-length notes
+  come back as a table of contents rather than a full body - on a
+  10,000-character note that's ~240 tokens instead of ~2580.
+
+The largest single lever is neither: pass a smaller `limit` on
+`find_notes`, `find_notes_in_notebook` and `find_notes_with_tag`. The
+default is 20; `limit=5` is ~73% less, and combined with
+`search_results: "none"` it's ~84% less.
+
+Disabling the tools you don't use helps too, though it works on a
+different budget - tool definitions are sent once per session, and cost a
+few thousand tokens at the default set.
 
 ## Environment Variables
 
@@ -109,11 +151,42 @@ You can also configure content exposure via environment variables:
 ```bash
 export JOPLIN_CONTENT_SEARCH_RESULTS=none
 export JOPLIN_CONTENT_INDIVIDUAL_NOTES=preview
-export JOPLIN_CONTENT_LISTINGS=none
 export JOPLIN_MAX_PREVIEW_LENGTH=150
 export JOPLIN_SMART_TOC_THRESHOLD=2000
 export JOPLIN_ENABLE_SMART_TOC=true
+export JOPLIN_OUTPUT_HINTS=false
 ```
+
+**Precedence:** environment variables override the config file, key by
+key. A variable only takes part when it is actually set, so setting one
+does not disturb the rest of your file. Full order:
+
+```
+direct parameters  >  environment  >  config file  >  defaults
+```
+
+This is what makes an MCP client's `env` block work: Claude Desktop,
+Cursor and the VS Code extension all configure a server that way, and
+those settings need to win over whatever file happens to be discovered.
+
+Two things to know:
+
+- `notebook_allowlist` from the environment replaces the file's list
+  wholesale rather than intersecting with it, the same as every other
+  key. An env allowlist can therefore widen access, not only narrow it.
+- A variable set to an empty or whitespace-only value counts as **not
+  set**, so it leaves the file's value alone. Clients routinely emit an
+  empty string for a field the user left blank, and treating that as an
+  override would replace a configured value with a default.
+- `JOPLIN_NOTEBOOK_ALLOWLIST` is the exception, because an empty allowlist
+  means *deny all* rather than "no allowlist". A blank value never widens
+  access: with no config file it denies every notebook, and alongside a
+  config file the file's own list stands.
+- A malformed variable (`JOPLIN_PORT=abc`) fails config load rather than
+  being ignored, and **the server refuses to start**. It does not fall
+  back to defaults: defaults enable more tools and no notebook allowlist,
+  so a typo in one variable must never widen what the agent can reach.
+  The parse error is logged to stderr.
 
 ## Security Best Practices
 
@@ -125,9 +198,8 @@ export JOPLIN_ENABLE_SMART_TOC=true
 
 ### For Balanced Privacy
 1. Use `preview` for search results
-2. Use `none` for listings
-3. Use `full` only for individual notes when needed
-4. Set a reasonable `max_preview_length` (100-200 characters)
+2. Use `full` only for individual notes when needed
+3. Set a reasonable `max_preview_length` (100-200 characters)
 
 ### For Corporate/Sensitive Data
 1. Consider using `none` for all contexts
@@ -196,6 +268,7 @@ The system validates content exposure settings:
 - `max_preview_length` must be a non-negative integer
 - `smart_toc_threshold` must be a positive integer
 - `enable_smart_toc` must be a boolean value
+- `output_hints` must be a boolean value
 - Unknown settings will cause validation errors
 
 Invalid configuration example:

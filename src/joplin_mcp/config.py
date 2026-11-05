@@ -1,6 +1,7 @@
 """Configuration management for Joplin MCP server."""
 
 import json
+import logging
 import os
 import warnings
 from pathlib import Path
@@ -92,9 +93,27 @@ class ConfigParser:
 
     @staticmethod
     def get_env_var(name: str, prefix: str = "JOPLIN_") -> Optional[str]:
-        """Get environment variable and strip whitespace."""
+        """Get environment variable and strip whitespace.
+
+        A blank or whitespace-only value reads as absent - clients routinely
+        pass an empty string for a field the user left unfilled.
+        """
         value = os.environ.get(f"{prefix}{name}")
-        return value.strip() if value else None
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @staticmethod
+    def env_is_set(name: str, prefix: str = "JOPLIN_") -> bool:
+        """Whether a variable is set to something meaningful.
+
+        The single source of truth for "did the user configure this?". Any
+        caller that tests ``os.environ`` membership directly disagrees with
+        ``get_env_var`` about blank values, which is how an empty
+        JOPLIN_VERIFY_SSL came to replace a file's value with a default.
+        """
+        return ConfigParser.get_env_var(name, prefix) is not None
 
 
 class ConfigValidator:
@@ -196,15 +215,16 @@ class JoplinMCPConfig:
         "JOPLIN_SSL_VERIFY": "JOPLIN_VERIFY_SSL",
     }
 
-    # Default tool configurations - optimised for LLMs (24 tools total)
+    # Default tool configurations - optimised for LLMs (26 tools total)
     DEFAULT_TOOLS = {
-        # Finding notes (7 tools enabled by default, 1 disabled)
+        # Finding notes (8 tools enabled by default, 1 disabled)
         "find_notes": True,  # Find notes by text content
         "find_notes_with_tag": True,  # Find notes by tag
         "find_notes_in_notebook": True,  # Find notes by notebook
         "find_in_note": True,  # Regex search within a single note
         "get_all_notes": False,  # Get all notes - disabled by default (can fill context window)
         "get_note": True,  # Get formatted note details
+        "get_note_resources": True,  # List a note's resources, including OCR text from images/PDFs
         "get_links": True,  # Extract links to other notes from a note
         # Managing notes (3 tools)
         "create_note": True,  # Create new note
@@ -227,6 +247,9 @@ class JoplinMCPConfig:
         "untag_note": True,  # Remove tag from note
         # Utility operations (1 tool)
         "ping_joplin": True,  # Test connection
+        # Trash operations (2 tools)
+        "list_trash": True,  # List trashed notes and notebooks
+        "restore_from_trash": True,  # Restore deleted note/notebook from trash
         # Import operations (1 tool)
         "import_from_file": False,  # Import single file or folder
         # Bulk operations (6 tools)
@@ -236,9 +259,6 @@ class JoplinMCPConfig:
         "search_and_bulk_update_execute": True,  # Execute bulk changes (preview required first, auto-backup)
         "bulk_tag_notes": True,  # Bulk tag notes
         "strip_note_tags": True,  # Remove all tags from a note
-        # Trash operations (2 tools)
-        "list_trash": True,  # List soft-deleted items
-        "restore_from_trash": True,  # Restore from trash
         # Revision operations (3 tools)
         "get_note_history": True,  # List note revisions
         "restore_note_revision": True,  # Restore from revision (creates new note)
@@ -256,6 +276,7 @@ class JoplinMCPConfig:
             "find_in_note",
             "get_all_notes",
             "get_note",
+            "get_note_resources",
             "get_links",
         ],
         "notes": ["create_note", "update_note", "edit_note", "delete_note"],
@@ -275,6 +296,7 @@ class JoplinMCPConfig:
             "untag_note",
         ],
         "utilities": ["ping_joplin"],
+        "trash": ["list_trash", "restore_from_trash"],
         "import": [
             "import_from_file",
         ],
@@ -286,10 +308,6 @@ class JoplinMCPConfig:
             "bulk_tag_notes",
             "strip_note_tags",
         ],
-        "trash": [
-            "list_trash",
-            "restore_from_trash",
-        ],
         "revisions": [
             "get_note_history",
             "restore_note_revision",
@@ -299,6 +317,16 @@ class JoplinMCPConfig:
             "backup_database",
         ],
     }
+
+    # Contexts that actually gate content in tool output
+    CONTENT_EXPOSURE_CONTEXTS = ("search_results", "individual_notes")
+
+    # Keys accepted in existing config files but dropped on load. "listings"
+    # was written by the installer and documented as governing
+    # find_notes_in_notebook/find_notes_with_tag, but no tool ever read it -
+    # those tools use "search_results". Rejecting the key outright would break
+    # every config file the old installer wrote.
+    DEPRECATED_CONTENT_EXPOSURE_KEYS = ("listings",)
 
     # Content exposure levels for privacy control
     CONTENT_EXPOSURE_LEVELS = {
@@ -319,11 +347,33 @@ class JoplinMCPConfig:
     DEFAULT_CONTENT_EXPOSURE = {
         "search_results": "preview",  # Search results show previews
         "individual_notes": "full",  # Individual note retrieval shows full content
-        "listings": "none",  # Note listings show no content
         "max_preview_length": 300,  # Maximum preview length in characters
         "smart_toc_threshold": 2000,  # Show TOC for notes longer than this (in characters)
         "enable_smart_toc": True,  # Enable smart TOC behavior in get_note
+        # Worked-example follow-up calls (NEXT_STEPS, NEXT_PAGE). Off by
+        # default: the parameters they demonstrate are already in the tool
+        # schema, so for a capable model they are repetition charged per call.
+        # Smaller models attend to nearby examples better than to a schema
+        # defined earlier, so the deployer can switch them back on.
+        "output_hints": False,
     }
+
+    # Environment variable suffix for each content_exposure key, and how to
+    # parse it. Single source of truth for from_environment() and the merge in
+    # from_file_and_environment() - the two must agree on names or an env var
+    # silently does nothing.
+    CONTENT_EXPOSURE_ENV_VARS = {
+        "search_results": ("CONTENT_SEARCH_RESULTS", "str"),
+        "individual_notes": ("CONTENT_INDIVIDUAL_NOTES", "str"),
+        "max_preview_length": ("MAX_PREVIEW_LENGTH", "int"),
+        "smart_toc_threshold": ("SMART_TOC_THRESHOLD", "int"),
+        "enable_smart_toc": ("ENABLE_SMART_TOC", "bool"),
+        "output_hints": ("OUTPUT_HINTS", "bool"),
+    }
+
+    # Sentinel value: when notebook_allowlist equals this, all notebooks are accessible
+    # Tuple to prevent accidental mutation of the shared sentinel
+    ALLOW_ALL = ("**",)
 
     # Default import settings
     DEFAULT_IMPORT_SETTINGS = {
@@ -347,6 +397,7 @@ class JoplinMCPConfig:
         tools: Optional[Dict[str, bool]] = None,
         content_exposure: Optional[Dict[str, Union[str, int]]] = None,
         import_settings: Optional[Dict[str, Any]] = None,
+        notebook_allowlist: Optional[List[str]] = None,
     ):
         """Initialize configuration with default values."""
         # Use centralized defaults if not provided
@@ -376,6 +427,14 @@ class JoplinMCPConfig:
         self.import_settings = self.DEFAULT_IMPORT_SETTINGS.copy()
         if import_settings:
             self.import_settings.update(import_settings)
+
+        # Initialize notebook allowlist (ALLOW_ALL = no restrictions, [] = deny all)
+        self.notebook_allowlist = notebook_allowlist if notebook_allowlist is not None else self.ALLOW_ALL
+
+    @property
+    def has_notebook_allowlist(self) -> bool:
+        """Return True when a notebook allowlist is configured (including empty)."""
+        return self.notebook_allowlist != self.ALLOW_ALL
 
     def is_tool_enabled(self, tool_name: str) -> bool:
         """Check if a specific tool is enabled."""
@@ -416,6 +475,10 @@ class JoplinMCPConfig:
     def is_smart_toc_enabled(self) -> bool:
         """Check if smart TOC behavior is enabled."""
         return self.content_exposure.get("enable_smart_toc", True)
+
+    def are_output_hints_enabled(self) -> bool:
+        """Check if worked-example follow-up hints should be emitted."""
+        return self.content_exposure.get("output_hints", False)
 
     def should_show_content(self, context: str) -> bool:
         """Check if content should be shown for a specific context."""
@@ -473,25 +536,41 @@ class JoplinMCPConfig:
         # Load tools configuration from environment
         tools = {}
         for tool_name in cls.DEFAULT_TOOLS:
-            env_var = f"{prefix}TOOL_{tool_name.upper()}"
-            tool_value = os.environ.get(env_var)
+            tool_value = ConfigParser.get_env_var(
+                f"TOOL_{tool_name.upper()}", prefix
+            )
             if tool_value is not None:
                 tools[tool_name] = ConfigParser.parse_bool(tool_value)
 
         # Load content exposure configuration from environment
         content_exposure = {}
-        for context in ["search_results", "individual_notes", "listings"]:
-            env_var = f"{prefix}CONTENT_{context.upper()}"
-            content_value = os.environ.get(env_var)
-            if content_value is not None:
-                content_exposure[context] = content_value
+        for key, (suffix, value_kind) in cls.CONTENT_EXPOSURE_ENV_VARS.items():
+            raw_value = ConfigParser.get_env_var(suffix, prefix)
+            if raw_value is None:
+                continue
+            if value_kind == "int":
+                content_exposure[key] = ConfigParser.parse_int(raw_value, key)
+            elif value_kind == "bool":
+                content_exposure[key] = ConfigParser.parse_bool(raw_value)
+            else:
+                content_exposure[key] = raw_value
 
-        # Load max preview length from environment
-        max_preview_env = os.environ.get(f"{prefix}MAX_PREVIEW_LENGTH")
-        if max_preview_env is not None:
-            content_exposure["max_preview_length"] = ConfigParser.parse_int(
-                max_preview_env, "max_preview_length"
-            )
+        # Load notebook allowlist from environment (comma-separated).
+        #
+        # Deliberately raw presence, not env_is_set(): this is the one key where
+        # blank cannot mean "unset". [] is deny-all here (see the constructor),
+        # so a blank value that read as absent would hand back ALLOW_ALL and
+        # turn "no notebooks" into "every notebook" for an environment-only
+        # setup. Blank must never widen access, so it stays deny-all.
+        #
+        # Layered over a config file, the merge in from_file_and_environment()
+        # treats blank as unset and the file's own list stands - also no
+        # widening, and it avoids an empty field in a client config locking a
+        # user out of their whole instance.
+        notebook_allowlist = None
+        if f"{prefix}NOTEBOOK_ALLOWLIST" in os.environ:
+            raw = os.environ[f"{prefix}NOTEBOOK_ALLOWLIST"]
+            notebook_allowlist = [e.strip() for e in raw.split(",") if e.strip()]
 
         return cls(
             host=host,
@@ -501,6 +580,7 @@ class JoplinMCPConfig:
             verify_ssl=verify_ssl,
             tools=tools,
             content_exposure=content_exposure,
+            notebook_allowlist=notebook_allowlist,
         )
 
     def validate(self) -> None:
@@ -536,16 +616,18 @@ class JoplinMCPConfig:
                     raise ConfigError(
                         f"smart_toc_threshold must be a non-negative integer, got {type(value)}"
                     )
-            elif key == "enable_smart_toc":
+            elif key in ("enable_smart_toc", "output_hints"):
                 if not isinstance(value, bool):
                     raise ConfigError(
-                        f"enable_smart_toc must be a boolean, got {type(value)}"
+                        f"{key} must be a boolean, got {type(value)}"
                     )
-            elif key in ["search_results", "individual_notes", "listings"]:
+            elif key in self.CONTENT_EXPOSURE_CONTEXTS:
                 if value not in self.CONTENT_EXPOSURE_LEVELS:
                     raise ConfigError(
                         f"Invalid content exposure level '{value}' for '{key}'. Must be one of: {list(self.CONTENT_EXPOSURE_LEVELS.keys())}"
                     )
+            elif key in self.DEPRECATED_CONTENT_EXPOSURE_KEYS:
+                continue  # Inert, tolerated for older config files
             else:
                 raise ConfigError(f"Unknown content exposure setting: {key}")
 
@@ -577,6 +659,7 @@ class JoplinMCPConfig:
             "enabled_tools_count": len(self.get_enabled_tools()),
             "disabled_tools_count": len(self.get_disabled_tools()),
             "content_exposure": self.content_exposure.copy(),
+            "notebook_allowlist": None if self.notebook_allowlist == self.ALLOW_ALL else self.notebook_allowlist,
         }
 
     def __repr__(self) -> str:
@@ -587,11 +670,18 @@ class JoplinMCPConfig:
         content_levels = {
             k: v for k, v in self.content_exposure.items() if k != "max_preview_length"
         }
+        if self.notebook_allowlist == self.ALLOW_ALL:
+            allowlist_info = "disabled"
+        elif not self.notebook_allowlist:
+            allowlist_info = "empty (deny all)"
+        else:
+            allowlist_info = f"{len(self.notebook_allowlist)} patterns"
         return (
             f"JoplinMCPConfig(host='{self.host}', port={self.port}, "
             f"token={token_display}, timeout={self.timeout}, "
             f"verify_ssl={self.verify_ssl}, tools={enabled_count}/{total_count} enabled, "
-            f"content_exposure={content_levels})"
+            f"content_exposure={content_levels}, "
+            f"notebook_allowlist={allowlist_info})"
         )
 
     @classmethod
@@ -762,12 +852,12 @@ class JoplinMCPConfig:
                             raise ConfigError(
                                 f"Invalid value for 'smart_toc_threshold': expected non-negative integer, got {type(value)}"
                             )
-                    elif key == "enable_smart_toc":
+                    elif key in ("enable_smart_toc", "output_hints"):
                         if not isinstance(value, bool):
                             raise ConfigError(
-                                f"Invalid value for 'enable_smart_toc': expected boolean, got {type(value)}"
+                                f"Invalid value for '{key}': expected boolean, got {type(value)}"
                             )
-                    elif key in ["search_results", "individual_notes", "listings"]:
+                    elif key in cls.CONTENT_EXPOSURE_CONTEXTS:
                         if not isinstance(value, str):
                             raise ConfigError(
                                 f"Invalid value for '{key}': expected string, got {type(value)}"
@@ -776,6 +866,12 @@ class JoplinMCPConfig:
                             raise ConfigError(
                                 f"Invalid content exposure level '{value}' for '{key}'. Must be one of: {list(cls.CONTENT_EXPOSURE_LEVELS.keys())}"
                             )
+                    elif key in cls.DEPRECATED_CONTENT_EXPOSURE_KEYS:
+                        logger.warning(
+                            f"Ignoring content_exposure setting '{key}': no tool reads "
+                            "it. Use 'search_results' to control note listings."
+                        )
+                        continue
                     else:
                         raise ConfigError(f"Unknown content exposure setting: {key}")
                     content_exposure[key] = value
@@ -835,6 +931,29 @@ class JoplinMCPConfig:
                     f"Invalid data type for 'import_settings': expected dictionary, got {type(data['import_settings'])}"
                 )
 
+        # Notebook allowlist - must be a list of strings or None
+        if "notebook_allowlist" in data:
+            if data["notebook_allowlist"] is None:
+                # Explicit null = no allowlist (no restrictions)
+                validated["notebook_allowlist"] = None
+            elif isinstance(data["notebook_allowlist"], list):
+                allowlist = []
+                for i, entry in enumerate(data["notebook_allowlist"]):
+                    if not isinstance(entry, str):
+                        raise ConfigError(
+                            f"Invalid type for notebook_allowlist[{i}]: "
+                            f"expected string, got {type(entry)}"
+                        )
+                    stripped = entry.strip()
+                    if stripped:
+                        allowlist.append(stripped)
+                validated["notebook_allowlist"] = allowlist
+            else:
+                raise ConfigError(
+                    f"Invalid data type for 'notebook_allowlist': "
+                    f"expected list, got {type(data['notebook_allowlist'])}"
+                )
+
         return validated
 
     @classmethod
@@ -854,25 +973,25 @@ class JoplinMCPConfig:
             override_key: str,
             env_value: Any,
             file_value: Any,
-            default_value: Any,
         ):
-            """Get value with proper priority: override > env (if not default) > file > default."""
+            """Pick a value by priority: override > env > file.
+
+            Only an environment variable that is actually set wins. Falling
+            through to ``file_value`` (rather than to ``env_value``) is what
+            keeps ``from_environment()``'s own defaults from clobbering the
+            file, so defaults are the constructor's job, not this function's.
+            """
             if override_key in overrides:
                 return overrides[override_key]
-            else:
-                # Check if environment variable was explicitly set (not using default)
-                env_var_name = f"{prefix}{key.upper()}"
-                if env_var_name in os.environ:
-                    return env_value
-                else:
-                    return file_value
+            if ConfigParser.env_is_set(key.upper(), prefix):
+                return env_value
+            return file_value
 
         # Merge tools configuration specially
         merged_tools = config.tools.copy()
         # Override with environment tools
         for tool_name, enabled in env_config.tools.items():
-            env_var_name = f"{prefix}TOOL_{tool_name.upper()}"
-            if env_var_name in os.environ:
+            if ConfigParser.env_is_set(f"TOOL_{tool_name.upper()}", prefix):
                 merged_tools[tool_name] = enabled
         # Override with direct tool overrides
         if "tools" in overrides:
@@ -882,12 +1001,8 @@ class JoplinMCPConfig:
         merged_content_exposure = config.content_exposure.copy()
         # Override with environment content exposure
         for key, value in env_config.content_exposure.items():
-            env_var_name = (
-                f"{prefix}CONTENT_{key.upper()}"
-                if key != "max_preview_length"
-                else f"{prefix}MAX_PREVIEW_LENGTH"
-            )
-            if env_var_name in os.environ:
+            suffix, _ = cls.CONTENT_EXPOSURE_ENV_VARS.get(key, (key.upper(), "str"))
+            if ConfigParser.env_is_set(suffix, prefix):
                 merged_content_exposure[key] = value
         # Override with direct content exposure overrides
         if "content_exposure" in overrides:
@@ -898,29 +1013,32 @@ class JoplinMCPConfig:
         if "import_settings" in overrides and isinstance(overrides["import_settings"], dict):
             merged_import_settings.update(overrides["import_settings"])
 
+        # Merge notebook allowlist: env overrides file if explicitly set
+        merged_notebook_allowlist = config.notebook_allowlist
+        if ConfigParser.env_is_set("NOTEBOOK_ALLOWLIST", prefix):
+            merged_notebook_allowlist = env_config.notebook_allowlist
+        if "notebook_allowlist" in overrides:
+            merged_notebook_allowlist = overrides["notebook_allowlist"]
+
         merged_data = {
-            "host": get_value(
-                "host", "host_override", env_config.host, config.host, "localhost"
-            ),
-            "port": get_value(
-                "port", "port_override", env_config.port, config.port, 41184
-            ),
+            "host": get_value("host", "host_override", env_config.host, config.host),
+            "port": get_value("port", "port_override", env_config.port, config.port),
             "token": get_value(
-                "token", "token_override", env_config.token, config.token, None
+                "token", "token_override", env_config.token, config.token
             ),
             "timeout": get_value(
-                "timeout", "timeout_override", env_config.timeout, config.timeout, 60
+                "timeout", "timeout_override", env_config.timeout, config.timeout
             ),
             "verify_ssl": get_value(
                 "verify_ssl",
                 "verify_ssl_override",
                 env_config.verify_ssl,
                 config.verify_ssl,
-                True,
             ),
             "tools": merged_tools,
             "content_exposure": merged_content_exposure,
             "import_settings": merged_import_settings,
+            "notebook_allowlist": merged_notebook_allowlist,
         }
 
         return cls(**merged_data)
@@ -934,18 +1052,25 @@ class JoplinMCPConfig:
     def auto_discover(
         cls, search_filenames: Optional[List[str]] = None
     ) -> "JoplinMCPConfig":
-        """Automatically discover and load configuration from standard locations."""
+        """Automatically discover and load configuration from standard locations.
+
+        A discovered file is merged with the environment rather than replacing
+        it: MCP clients configure servers through an ``env`` block, so a file
+        that shadowed those variables made the client's settings unreachable.
+        Precedence is environment > file > defaults, and only variables that
+        are actually set take part.
+        """
         if search_filenames:
             # Search for custom filenames in current directory
             for filename in search_filenames:
                 file_path = Path.cwd() / filename
                 if file_path.exists():
-                    return cls.from_file(file_path)
+                    return cls.from_file_and_environment(file_path)
         else:
             # Search default paths
             for path in cls.get_default_config_paths():
                 if path.exists():
-                    return cls.from_file(path)
+                    return cls.from_file_and_environment(path)
 
         # If no file found, return default configuration
         return cls.from_environment()
@@ -1017,20 +1142,22 @@ class JoplinMCPConfig:
                                 f"smart_toc_threshold must be a non-negative integer, got {type(value)}"
                             )
                         )
-                elif key == "enable_smart_toc":
+                elif key in ("enable_smart_toc", "output_hints"):
                     if not isinstance(value, bool):
                         errors.append(
                             ConfigError(
-                                f"enable_smart_toc must be a boolean, got {type(value)}"
+                                f"{key} must be a boolean, got {type(value)}"
                             )
                         )
-                elif key in ["search_results", "individual_notes", "listings"]:
+                elif key in self.CONTENT_EXPOSURE_CONTEXTS:
                     if value not in self.CONTENT_EXPOSURE_LEVELS:
                         errors.append(
                             ConfigError(
                                 f"Invalid content exposure level '{value}' for '{key}'. Must be one of: {list(self.CONTENT_EXPOSURE_LEVELS.keys())}"
                             )
                         )
+                elif key in self.DEPRECATED_CONTENT_EXPOSURE_KEYS:
+                    continue  # Inert, tolerated for older config files
                 else:
                     errors.append(
                         ConfigError(f"Unknown content exposure setting: {key}")
@@ -1142,6 +1269,11 @@ class JoplinMCPConfig:
             "verify_ssl": self.verify_ssl,
             "tools": self.tools.copy(),
             "content_exposure": self.content_exposure.copy(),
+            "notebook_allowlist": (
+                list(self.notebook_allowlist)
+                if self.notebook_allowlist != self.ALLOW_ALL
+                else self.ALLOW_ALL
+            ),
         }
         current_values.update(overrides)
         return self.__class__(**current_values)
@@ -1236,97 +1368,125 @@ class JoplinMCPConfig:
             "content_exposure": self.content_exposure.copy(),
         }
 
-    # === INTERACTIVE CONFIGURATION ===
 
-    @classmethod
-    def create_interactively(
-        cls,
-        token: Optional[str] = None,
-        include_permissions: bool = True,
-        include_content_privacy: bool = True,
-        **defaults,
-    ) -> "JoplinMCPConfig":
-        """Create configuration interactively with user prompts.
+# === Config resolver ===
+# One config identity at a time. Tools read via get_config(); main()
+# replaces wholesale via set_config() when --config-file is supplied.
+# set_config is a replace, not a merge -- partial-blend semantics are
+# intentionally absent.
 
-        Args:
-            token: Pre-provided token (skip token prompt if provided)
-            include_permissions: Whether to prompt for tool permissions
-            include_content_privacy: Whether to prompt for content privacy settings
-            defaults: Default values for configuration options
+logger = logging.getLogger(__name__)
 
-        Returns:
-            Configured JoplinMCPConfig instance
-        """
-        from .ui_integration import (
-            get_content_privacy_settings,
-            get_permission_settings,
-            get_token_interactively,
+
+def _auto_discover_with_logging() -> JoplinMCPConfig:
+    """Auto-discover configuration on import, with logging.
+
+    Honours JOPLIN_MCP_CONFIG / JOPLIN_CONFIG_FILE for an explicit path,
+    otherwise falls back to JoplinMCPConfig.auto_discover() (standard
+    locations + cwd).
+
+    Import must never raise, so a failure still returns a usable object -
+    but the defaults it returns are *more permissive* than any config a
+    user bothered to write (19 tools enabled, no notebook allowlist). The
+    error is recorded in ``_config_load_error`` and ``main()`` refuses to
+    start while it is set, so a typo can never quietly widen access.
+    """
+    global _config_load_error
+    _config_load_error = None
+    logger.info("Auto-discovering Joplin MCP configuration...")
+
+    try:
+        loaded_from: Optional[Path] = None
+
+        explicit_config = os.getenv("JOPLIN_MCP_CONFIG") or os.getenv(
+            "JOPLIN_CONFIG_FILE"
         )
-
-        # Get token if not provided
-        if not token:
-            token = get_token_interactively()
-
-        # Get permission settings if requested
-        if include_permissions:
-            tool_permissions = get_permission_settings()
+        if explicit_config:
+            cfg_path = Path(explicit_config)
+            if cfg_path.exists():
+                logger.info(
+                    f"Using explicit configuration from: {cfg_path}"
+                )
+                config = JoplinMCPConfig.from_file_and_environment(cfg_path)
+                loaded_from = cfg_path
+            else:
+                logger.warning(
+                    f"Explicit config path set but not found: {cfg_path}. Falling back to discovery."
+                )
+                config = JoplinMCPConfig.auto_discover()
         else:
-            tool_permissions = cls.DEFAULT_TOOLS.copy()
+            config = JoplinMCPConfig.auto_discover()
 
-        # Get content privacy settings if requested
-        if include_content_privacy:
-            content_privacy = get_content_privacy_settings()
+        if loaded_from is None:
+            for path in JoplinMCPConfig.get_default_config_paths():
+                if path.exists():
+                    loaded_from = path
+                    break
+            if loaded_from is None:
+                cwd = Path.cwd()
+                for path in [
+                    cwd / "joplin-mcp.json",
+                    cwd / "joplin-mcp.yaml",
+                    cwd / "joplin-mcp.yml",
+                ]:
+                    if path.exists():
+                        loaded_from = path
+                        break
+
+        if loaded_from is None:
+            logger.warning(
+                "No configuration file found. Using environment variables and defaults."
+            )
         else:
-            content_privacy = cls.DEFAULT_CONTENT_EXPOSURE.copy()
+            logger.info(
+                f"Successfully loaded configuration from: {loaded_from}"
+            )
 
-        # Create configuration with user choices and defaults
-        config_kwargs = {
-            "host": defaults.get("host", cls.DEFAULT_CONNECTION["host"]),
-            "port": defaults.get("port", cls.DEFAULT_CONNECTION["port"]),
-            "token": token,
-            "timeout": defaults.get("timeout", cls.DEFAULT_CONNECTION["timeout"]),
-            "verify_ssl": defaults.get(
-                "verify_ssl", cls.DEFAULT_CONNECTION["verify_ssl"]
-            ),
-            "tools": tool_permissions,
-            "content_exposure": content_privacy,
-        }
+        return config
 
-        return cls(**config_kwargs)
+    except Exception as e:
+        _config_load_error = e
+        logger.error(f"Failed to load configuration: {e}")
+        logger.error(
+            "Refusing to apply default settings over a configuration that "
+            "failed to load - defaults enable more tools and no notebook "
+            "allowlist. Fix the error above, or unset the config file to run "
+            "on defaults deliberately."
+        )
+        return JoplinMCPConfig()
 
-    def save_interactively(
-        self, suggested_path: Optional[Path] = None, include_token: bool = True
-    ) -> Path:
-        """Save configuration to a file with interactive path selection.
 
-        Args:
-            suggested_path: Suggested file path
-            include_token: Whether to include token in saved file
+_config_load_error: Optional[Exception] = None
+_current_config: JoplinMCPConfig = _auto_discover_with_logging()
 
-        Returns:
-            Path where config was saved
-        """
-        if not suggested_path:
-            suggested_path = Path.cwd() / "joplin-mcp.json"
 
-        config_path = suggested_path
+def get_config() -> JoplinMCPConfig:
+    """Return the live JoplinMCPConfig.
 
-        # Prepare config data
-        config_data = {
-            "host": self.host,
-            "port": self.port,
-            "timeout": self.timeout,
-            "verify_ssl": self.verify_ssl,
-            "tools": self.tools.copy(),
-            "content_exposure": self.content_exposure.copy(),
-        }
+    Returns the most recently set_config() value, or the auto-discovered
+    config from import time if set_config() was never called.
+    """
+    return _current_config
 
-        if include_token and self.token:
-            config_data["token"] = self.token
 
-        # Save configuration
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w") as f:
-            json.dump(config_data, f, indent=2)
+def get_config_load_error() -> Optional[Exception]:
+    """The error from discovery, if the discovered config failed to load.
 
-        return config_path
+    Non-None means the live config is permissive defaults standing in for a
+    config the user actually wrote. Callers that grant access on the strength
+    of the config - the server's startup path - must refuse rather than run.
+    """
+    return _config_load_error
+
+
+def set_config(cfg: JoplinMCPConfig) -> None:
+    """Replace the live config wholesale.
+
+    Subsequent get_config() calls return ``cfg``. This is a replace, not
+    a merge: fields not present on ``cfg`` are gone. Clears any discovery
+    error: the caller has supplied a config that loaded, which supersedes
+    whatever failed at import.
+    """
+    global _current_config, _config_load_error
+    _current_config = cfg
+    _config_load_error = None

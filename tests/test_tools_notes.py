@@ -1,475 +1,8 @@
 """Tests for tools/notes.py - Note tool helpers and tool functions."""
 
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-
-# === Tests for note body cache ===
-
-
-class TestNoteCache:
-    """Tests for the single-note cache used in sequential reading."""
-
-    def test_cache_and_retrieve(self):
-        """Should cache and retrieve note."""
-        from joplin_mcp.tools.notes import _set_cached_note, _get_cached_note, _clear_note_cache
-
-        _clear_note_cache()
-        mock_note = MagicMock()
-        mock_note.body = "Test content"
-
-        _set_cached_note("note123", mock_note)
-        result = _get_cached_note("note123")
-
-        assert result is mock_note
-
-    def test_cache_miss_returns_none(self):
-        """Should return None for cache miss."""
-        from joplin_mcp.tools.notes import _get_cached_note, _clear_note_cache
-
-        _clear_note_cache()
-        assert _get_cached_note("nonexistent") is None
-
-    def test_caching_new_note_replaces_old(self):
-        """Should replace old cached note when caching a new one."""
-        from joplin_mcp.tools.notes import _set_cached_note, _get_cached_note, _clear_note_cache
-
-        _clear_note_cache()
-        note1, note2 = MagicMock(), MagicMock()
-
-        _set_cached_note("note1", note1)
-        _set_cached_note("note2", note2)
-
-        assert _get_cached_note("note1") is None
-        assert _get_cached_note("note2") is note2
-
-    def test_clear_cache(self):
-        """Should clear the cached note."""
-        from joplin_mcp.tools.notes import _set_cached_note, _get_cached_note, _clear_note_cache
-
-        _clear_note_cache()
-        _set_cached_note("note1", MagicMock())
-
-        _clear_note_cache()
-        assert _get_cached_note("note1") is None
-
-
-# === Tests for _create_note_object ===
-
-
-class TestCreateNoteObject:
-    """Tests for _create_note_object helper function."""
-
-    def test_copies_original_note_attributes(self):
-        """Should copy standard attributes from original note."""
-        from joplin_mcp.tools.notes import _create_note_object
-
-        original = MagicMock()
-        original.id = "note123"
-        original.title = "Test Note"
-        original.created_time = 1609459200000
-        original.updated_time = 1609545600000
-        original.parent_id = "nb456"
-        original.is_todo = 1
-        original.todo_completed = 0
-        original.body = "Original body"
-
-        result = _create_note_object(original)
-
-        assert result.id == "note123"
-        assert result.title == "Test Note"
-        assert result.created_time == 1609459200000
-        assert result.updated_time == 1609545600000
-        assert result.parent_id == "nb456"
-        assert result.is_todo == 1
-        assert result.todo_completed == 0
-        assert result.body == "Original body"
-
-    def test_overrides_body_when_provided(self):
-        """Should use body_override when provided."""
-        from joplin_mcp.tools.notes import _create_note_object
-
-        original = MagicMock()
-        original.body = "Original body content"
-        original.id = "note123"
-        original.title = "Test"
-
-        result = _create_note_object(original, body_override="New body content")
-
-        assert result.body == "New body content"
-
-    def test_handles_missing_attributes(self):
-        """Should handle notes with missing attributes gracefully."""
-        from joplin_mcp.tools.notes import _create_note_object
-
-        # Create a mock that returns None for missing attributes
-        original = MagicMock()
-        original.configure_mock(
-            id="note123",
-            title="Test",
-            body="Body",
-        )
-        # Remove attributes that should use getattr default
-        del original.created_time
-        del original.updated_time
-        del original.parent_id
-        del original.is_todo
-        del original.todo_completed
-
-        result = _create_note_object(original)
-
-        assert result.id == "note123"
-        assert result.body == "Body"
-
-
-# === Tests for _handle_section_extraction ===
-
-
-class TestHandleSectionExtraction:
-    """Tests for _handle_section_extraction helper function."""
-
-    def test_returns_none_when_no_section(self):
-        """Should return None when section is not provided."""
-        from joplin_mcp.tools.notes import _handle_section_extraction
-
-        note = MagicMock()
-        note.body = "# Heading\nContent"
-
-        result = _handle_section_extraction(note, None, "note123", True)
-
-        assert result is None
-
-    def test_returns_none_when_include_body_false(self):
-        """Should return None when include_body is False."""
-        from joplin_mcp.tools.notes import _handle_section_extraction
-
-        note = MagicMock()
-        note.body = "# Heading\nContent"
-
-        result = _handle_section_extraction(note, "Heading", "note123", False)
-
-        assert result is None
-
-    def test_returns_none_when_no_body(self):
-        """Should return None when note has no body."""
-        from joplin_mcp.tools.notes import _handle_section_extraction
-
-        note = MagicMock()
-        note.body = ""
-
-        result = _handle_section_extraction(note, "Heading", "note123", True)
-
-        assert result is None
-
-    @patch("joplin_mcp.tools.notes.format_note_details")
-    def test_extracts_valid_section(self, mock_format):
-        """Should extract section content when found."""
-        from joplin_mcp.tools.notes import _handle_section_extraction
-
-        note = MagicMock()
-        note.body = "# Introduction\nThis is the intro.\n# Conclusion\nThis is the end."
-        note.title = "Test Note"
-
-        mock_format.return_value = "FORMATTED_OUTPUT"
-
-        result = _handle_section_extraction(note, "Introduction", "note123", True)
-
-        assert result is not None
-        assert "EXTRACTED_SECTION: Introduction" in result
-        assert "SECTION_QUERY: Introduction" in result
-        assert "FORMATTED_OUTPUT" in result
-
-    def test_shows_available_sections_when_not_found(self):
-        """Should show available sections when section not found."""
-        from joplin_mcp.tools.notes import _handle_section_extraction
-
-        note = MagicMock()
-        note.body = "# Section A\nContent A\n# Section B\nContent B"
-        note.title = "Test Note"
-
-        result = _handle_section_extraction(note, "NonExistent", "note123", True)
-
-        assert result is not None
-        assert "SECTION_NOT_FOUND: NonExistent" in result
-        assert "NOTE_ID: note123" in result
-        assert "AVAILABLE_SECTIONS:" in result
-        assert "Section A" in result
-        assert "Section B" in result
-        assert "Section 'NonExistent' not found" in result
-
-
-# === Tests for _handle_line_extraction ===
-
-
-class TestHandleLineExtraction:
-    """Tests for _handle_line_extraction helper function."""
-
-    def test_returns_none_when_include_body_false(self):
-        """Should return None when include_body is False."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        note = MagicMock()
-        note.body = "Line 1\nLine 2\nLine 3"
-
-        result = _handle_line_extraction(note, 1, None, "note123", False)
-
-        assert result is None
-
-    def test_returns_none_when_no_body(self):
-        """Should return None when note has no body."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        note = MagicMock()
-        note.body = ""
-
-        result = _handle_line_extraction(note, 1, None, "note123", True)
-
-        assert result is None
-
-    def test_validates_start_line_too_low(self):
-        """Should return error when start_line is less than 1."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        note = MagicMock()
-        note.body = "Line 1\nLine 2\nLine 3"
-        note.title = "Test"
-
-        result = _handle_line_extraction(note, 0, None, "note123", True)
-
-        assert "LINE_EXTRACTION_ERROR" in result
-        assert "Invalid start_line" in result
-        assert "must be between 1" in result
-
-    def test_validates_start_line_too_high(self):
-        """Should return error when start_line exceeds total lines."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        note = MagicMock()
-        note.body = "Line 1\nLine 2\nLine 3"
-        note.title = "Test"
-
-        result = _handle_line_extraction(note, 10, None, "note123", True)
-
-        assert "LINE_EXTRACTION_ERROR" in result
-        assert "Invalid start_line" in result
-        assert "must be between 1 and 3" in result
-
-    def test_validates_line_count_negative(self):
-        """Should return error when line_count is less than 1."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        note = MagicMock()
-        note.body = "Line 1\nLine 2\nLine 3"
-        note.title = "Test"
-
-        result = _handle_line_extraction(note, 1, 0, "note123", True)
-
-        assert "LINE_EXTRACTION_ERROR" in result
-        assert "Invalid line_count" in result
-        assert "must be >= 1" in result
-
-    @patch("joplin_mcp.tools.notes.format_note_details")
-    def test_extracts_lines_with_default_count(self, mock_format):
-        """Should extract 50 lines by default when line_count not specified."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        # Create note with 100 lines
-        lines = [f"Line {i}" for i in range(1, 101)]
-        note = MagicMock()
-        note.body = "\n".join(lines)
-        note.title = "Test"
-
-        mock_format.return_value = "FORMATTED_OUTPUT"
-
-        result = _handle_line_extraction(note, 1, None, "note123", True)
-
-        assert result is not None
-        assert "EXTRACTED_LINES: 1-50" in result
-        assert "50 lines" in result
-        assert "TOTAL_LINES: 100" in result
-        assert "EXTRACTION_TYPE: sequential_reading" in result
-        assert 'NEXT_CHUNK: get_note("note123", start_line=51)' in result
-
-    @patch("joplin_mcp.tools.notes.format_note_details")
-    def test_extracts_specified_line_count(self, mock_format):
-        """Should extract specified number of lines."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        lines = [f"Line {i}" for i in range(1, 21)]
-        note = MagicMock()
-        note.body = "\n".join(lines)
-        note.title = "Test"
-
-        mock_format.return_value = "FORMATTED_OUTPUT"
-
-        result = _handle_line_extraction(note, 5, 3, "note123", True)
-
-        assert result is not None
-        assert "EXTRACTED_LINES: 5-7" in result
-        assert "3 lines" in result
-
-    @patch("joplin_mcp.tools.notes.format_note_details")
-    def test_shows_end_of_note_status(self, mock_format):
-        """Should show end of note status when reaching end."""
-        from joplin_mcp.tools.notes import _handle_line_extraction
-
-        lines = ["Line 1", "Line 2", "Line 3"]
-        note = MagicMock()
-        note.body = "\n".join(lines)
-        note.title = "Test"
-
-        mock_format.return_value = "FORMATTED_OUTPUT"
-
-        result = _handle_line_extraction(note, 1, 10, "note123", True)
-
-        assert result is not None
-        assert "STATUS: End of note reached" in result
-        assert "NEXT_CHUNK" not in result
-
-
-# === Tests for _handle_toc_display ===
-
-
-class TestHandleTocDisplay:
-    """Tests for _handle_toc_display helper function."""
-
-    @patch("joplin_mcp.tools.notes.format_note_details")
-    def test_returns_toc_with_metadata(self, mock_format):
-        """Should return TOC with metadata when headings exist."""
-        from joplin_mcp.tools.notes import _handle_toc_display
-
-        note = MagicMock()
-        note.body = "# Heading 1\nContent\n## Heading 2\nMore content"
-        note.title = "Test Note"
-        note.id = "note123"
-
-        mock_format.return_value = "METADATA_OUTPUT"
-
-        result = _handle_toc_display(note, "note123", "explicit")
-
-        assert result is not None
-        assert "METADATA_OUTPUT" in result
-        assert "TABLE_OF_CONTENTS:" in result
-        assert "Heading 1" in result
-        assert "Heading 2" in result
-        assert "DISPLAY_MODE: explicit" in result
-        assert "NEXT_STEPS:" in result
-
-    def test_returns_none_when_no_headings(self):
-        """Should return None when body has no headings."""
-        from joplin_mcp.tools.notes import _handle_toc_display
-
-        note = MagicMock()
-        note.body = "Just regular text without any headings."
-        note.title = "Test"
-
-        result = _handle_toc_display(note, "note123", "explicit")
-
-        assert result is None
-
-    def test_returns_none_when_no_body(self):
-        """Should return None when note has no body."""
-        from joplin_mcp.tools.notes import _handle_toc_display
-
-        note = MagicMock()
-        note.body = ""
-
-        result = _handle_toc_display(note, "note123", "explicit", "")
-
-        assert result is None
-
-
-# === Tests for _handle_smart_toc_behavior ===
-
-
-class TestHandleSmartTocBehavior:
-    """Tests for _handle_smart_toc_behavior helper function."""
-
-    def test_returns_none_when_disabled(self):
-        """Should return None when smart TOC is disabled."""
-        from joplin_mcp.tools.notes import _handle_smart_toc_behavior
-
-        config = MagicMock()
-        config.is_smart_toc_enabled.return_value = False
-
-        note = MagicMock()
-        note.body = "# Heading\n" + "Content " * 500
-
-        result = _handle_smart_toc_behavior(note, "note123", config)
-
-        assert result is None
-
-    def test_returns_none_when_no_body(self):
-        """Should return None when note has no body."""
-        from joplin_mcp.tools.notes import _handle_smart_toc_behavior
-
-        config = MagicMock()
-        config.is_smart_toc_enabled.return_value = True
-
-        note = MagicMock()
-        note.body = ""
-
-        result = _handle_smart_toc_behavior(note, "note123", config)
-
-        assert result is None
-
-    def test_returns_none_when_short_note(self):
-        """Should return None when note is shorter than threshold."""
-        from joplin_mcp.tools.notes import _handle_smart_toc_behavior
-
-        config = MagicMock()
-        config.is_smart_toc_enabled.return_value = True
-        config.get_smart_toc_threshold.return_value = 2000
-
-        note = MagicMock()
-        note.body = "Short note content"
-
-        result = _handle_smart_toc_behavior(note, "note123", config)
-
-        assert result is None
-
-    @patch("joplin_mcp.tools.notes._handle_toc_display")
-    def test_returns_toc_for_long_note_with_headings(self, mock_toc_display):
-        """Should return TOC for long note with headings."""
-        from joplin_mcp.tools.notes import _handle_smart_toc_behavior
-
-        config = MagicMock()
-        config.is_smart_toc_enabled.return_value = True
-        config.get_smart_toc_threshold.return_value = 100
-
-        note = MagicMock()
-        note.body = "# Heading\n" + "Content " * 100
-
-        mock_toc_display.return_value = "TOC_DISPLAY_OUTPUT"
-
-        result = _handle_smart_toc_behavior(note, "note123", config)
-
-        assert result == "TOC_DISPLAY_OUTPUT"
-
-    @patch("joplin_mcp.tools.notes._handle_toc_display")
-    @patch("joplin_mcp.tools.notes.format_note_details")
-    def test_truncates_long_note_without_headings(self, mock_format, mock_toc_display):
-        """Should truncate long note when no headings exist."""
-        from joplin_mcp.tools.notes import _handle_smart_toc_behavior
-
-        config = MagicMock()
-        config.is_smart_toc_enabled.return_value = True
-        config.get_smart_toc_threshold.return_value = 100
-
-        note = MagicMock()
-        note.body = "Just regular text " * 100  # Long content, no headings
-
-        mock_toc_display.return_value = None  # No headings
-        mock_format.return_value = "TRUNCATED_OUTPUT"
-
-        result = _handle_smart_toc_behavior(note, "note123", config)
-
-        assert result is not None
-        assert "CONTENT_TRUNCATED" in result
-        assert "no headings for navigation" in result
-        assert "force_full=True" in result
 
 
 # === Tests for format_no_results_with_pagination ===
@@ -601,6 +134,21 @@ class TestUpdateNoteTool:
         assert "At least one field must be provided" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_rejects_empty_title(self):
+        """An empty `title` would silently rename the note to "" — reject it
+        at the Pydantic boundary."""
+        from conftest import ARG_VALIDATION_ERRORS
+        from joplin_mcp.tools.notes import update_note
+
+        with pytest.raises(ARG_VALIDATION_ERRORS, match="at least 1 character"):
+            await update_note.run(
+                {
+                    "note_id": "12345678901234567890123456789012",
+                    "title": "",
+                }
+            )
+
+    @pytest.mark.asyncio
     @patch("joplin_mcp.tools.notes.get_joplin_client")
     async def test_updates_title(self, mock_get_client):
         """Should update note title."""
@@ -620,6 +168,111 @@ class TestUpdateNoteTool:
         assert call_args[1]["title"] == "New Title"
         assert "UPDATE_NOTE" in result
         assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_echoes_new_title(self, mock_get_client):
+        """A renamed note should say which title it now has, not just its ID."""
+        from joplin_mcp.tools.notes import update_note
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        result = await update_note.fn(
+            "12345678901234567890123456789012",
+            title="New Title",
+        )
+
+        assert "TITLE: New Title" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_omits_title_when_only_body_changes(self, mock_get_client):
+        """A body-only update never learns the title, so it must not claim one."""
+        from joplin_mcp.tools.notes import update_note
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        result = await update_note.fn(
+            "12345678901234567890123456789012",
+            body="New content",
+        )
+
+        mock_client.get_note.assert_not_called()
+        assert "TITLE:" not in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_moves_note_to_notebook(self, mock_get_client, mock_resolve_nb):
+        """Should move note when notebook_name is provided."""
+        from joplin_mcp.tools.notes import update_note
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        mock_resolve_nb.return_value = "target-notebook-id"
+
+        result = await update_note.fn(
+            "12345678901234567890123456789012",
+            notebook_name="Archive",
+        )
+
+        mock_resolve_nb.assert_called_once_with("Archive")
+        mock_client.modify_note.assert_called_once()
+        call_args = mock_client.modify_note.call_args
+        assert call_args[0][0] == "12345678901234567890123456789012"
+        assert call_args[1]["parent_id"] == "target-notebook-id"
+        assert "title" not in call_args[1]
+        assert "UPDATE_NOTE" in result
+        assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_updates_title_and_moves_together(
+        self, mock_get_client, mock_resolve_nb
+    ):
+        """Should combine notebook move with other field updates in one call."""
+        from joplin_mcp.tools.notes import update_note
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        mock_resolve_nb.return_value = "target-notebook-id"
+
+        await update_note.fn(
+            "12345678901234567890123456789012",
+            title="Renamed",
+            notebook_name="Projects/Work",
+        )
+
+        mock_resolve_nb.assert_called_once_with("Projects/Work")
+        call_args = mock_client.modify_note.call_args
+        assert call_args[1]["title"] == "Renamed"
+        assert call_args[1]["parent_id"] == "target-notebook-id"
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_invalid_notebook_name_raises(
+        self, mock_get_client, mock_resolve_nb
+    ):
+        """Should propagate ValueError from get_notebook_id_by_name and not call modify_note."""
+        from joplin_mcp.tools.notes import update_note
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        mock_resolve_nb.side_effect = ValueError(
+            "Notebook 'NoSuch' not found. Available notebooks: Work, Personal."
+        )
+
+        with pytest.raises(ValueError, match="not found"):
+            await update_note.fn(
+                "12345678901234567890123456789012",
+                notebook_name="NoSuch",
+            )
+
+        mock_client.modify_note.assert_not_called()
 
 
 def _get_tool_fn(tool):
@@ -647,6 +300,26 @@ class TestDeleteNoteTool:
         mock_client.delete_note.assert_called_once_with("12345678901234567890123456789012")
         assert "DELETE_NOTE" in result
         assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_raises_when_note_missing(self, mock_get_client):
+        """Joplin's DELETE is idempotent — silently 200s on a missing note.
+        delete_note must GET first and surface the 404 so a caller doesn't
+        see SUCCESS for a no-op. Regression for the smoke-test finding."""
+        from joplin_mcp.tools.notes import delete_note
+
+        mock_client = MagicMock()
+        mock_client.get_note.side_effect = RuntimeError(
+            "404 Client Error: Not Found for url: http://localhost:41184/notes/00000000000000000000000000000000?token=***"
+        )
+        mock_get_client.return_value = mock_client
+
+        fn = _get_tool_fn(delete_note)
+        with pytest.raises(ValueError, match="404"):
+            await fn("00000000000000000000000000000000")
+
+        mock_client.delete_note.assert_not_called()
 
 
 class TestFindNotesTool:
@@ -698,6 +371,65 @@ class TestFindNotesTool:
 
         mock_client.get_all_notes.assert_called_once()
         assert result == "ALL_NOTES"
+
+
+class TestFindNotesTrashGuards:
+    """Tests for find_notes trash=True validation guards.
+
+    Joplin's search API and filter queries ignore include_deleted entirely,
+    so trash=True is only supported for query='*' with no task/completed filters.
+    These tests pin the ValueError behaviour.
+    """
+
+    @pytest.mark.asyncio
+    async def test_trash_with_text_query_raises(self):
+        """Should raise ValueError when trash=True is combined with a text query."""
+        from joplin_mcp.tools.notes import find_notes
+
+        with pytest.raises(ValueError, match="trash=True only works with"):
+            await find_notes.fn("meeting", trash=True)
+
+    @pytest.mark.asyncio
+    async def test_trash_with_task_filter_raises(self):
+        """Should raise ValueError when trash=True is combined with task filter."""
+        from joplin_mcp.tools.notes import find_notes
+
+        with pytest.raises(ValueError, match="trash=True cannot be combined"):
+            await find_notes.fn("*", trash=True, task=True)
+
+    @pytest.mark.asyncio
+    async def test_trash_with_completed_filter_raises(self):
+        """Should raise ValueError when trash=True is combined with completed filter."""
+        from joplin_mcp.tools.notes import find_notes
+
+        with pytest.raises(ValueError, match="trash=True cannot be combined"):
+            await find_notes.fn("*", trash=True, completed=False)
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.format_search_results_with_pagination")
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_trash_wildcard_passes_include_deleted(
+        self, mock_get_client, mock_format
+    ):
+        """Should forward include_deleted=1 to get_all_notes on the supported path."""
+        from joplin_mcp.tools.notes import find_notes
+
+        trashed = MagicMock()
+        trashed.id = "t1"
+        trashed.title = "Trashed"
+        trashed.deleted_time = 1700000000000
+        trashed.updated_time = 1609545600000
+
+        mock_client = MagicMock()
+        mock_client.get_all_notes.return_value = [trashed]
+        mock_get_client.return_value = mock_client
+        mock_format.return_value = "TRASHED_RESULTS"
+
+        result = await find_notes.fn("*", trash=True)
+
+        mock_client.get_all_notes.assert_called_once()
+        assert mock_client.get_all_notes.call_args[1].get("include_deleted") == 1
+        assert result == "TRASHED_RESULTS"
 
 
 class TestFindNoteWithTagTool:
@@ -875,6 +607,219 @@ class TestGetLinksTool:
         assert "section_slug: my-section" in result
 
 
+def _make_resource(rid, title="x.png", mime="image/png", ocr_text="", ocr_status=0):
+    """Build a MagicMock resource matching joppy's ResourceData attribute shape."""
+    r = MagicMock()
+    r.id = rid
+    r.title = title
+    r.mime = mime
+    r.ocr_text = ocr_text
+    r.ocr_status = ocr_status
+    return r
+
+
+def _make_page(items, has_more=False):
+    """Build a MagicMock matching joppy DataList shape."""
+    page = MagicMock()
+    page.items = items
+    page.has_more = has_more
+    return page
+
+
+class TestGetNoteResourcesTool:
+    """Tests for get_note_resources tool."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_empty_resource_list(self, mock_get_client):
+        """No resources attached -> 'RESOURCES: None' and zero counts."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn("12345678901234567890123456789012")
+
+        assert "TOTAL_RESOURCES: 0" in result
+        assert "RESOURCES_WITH_OCR_TEXT: 0" in result
+        assert "RESOURCES: None" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_single_resource_with_ocr_text(self, mock_get_client):
+        """Resource with OCR text -> rendered with status label and indented text."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([
+            _make_resource("res1", title="photo.png", ocr_text="Hello\nworld", ocr_status=2),
+        ])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn("12345678901234567890123456789012")
+
+        assert "TOTAL_RESOURCES: 1" in result
+        assert "RESOURCES_WITH_OCR_TEXT: 1" in result
+        assert "resource_id: res1" in result
+        assert "title: photo.png" in result
+        assert "ocr_status: done" in result
+        # Multi-line OCR text indented under the literal-block marker.
+        assert "ocr_text: |" in result
+        assert "      Hello" in result
+        assert "      world" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_ocr_only_false_includes_empty_text(self, mock_get_client):
+        """Default ocr_only=False -> resources without OCR text still listed."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([
+            _make_resource("res1", title="audio.m4a", mime="audio/mp4", ocr_text="", ocr_status=0),
+        ])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn("12345678901234567890123456789012")
+
+        assert "TOTAL_RESOURCES: 1" in result
+        assert "RESOURCES_WITH_OCR_TEXT: 0" in result
+        assert "resource_id: res1" in result
+        assert "ocr_status: none" in result
+        assert "ocr_text: (none)" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_ocr_only_true_filters_empty_text(self, mock_get_client):
+        """ocr_only=True -> resources with empty OCR text are excluded from listing."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([
+            _make_resource("res1", ocr_text="", ocr_status=0),
+            _make_resource("res2", title="diagram.png", ocr_text="Some text", ocr_status=2),
+        ])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn(
+            "12345678901234567890123456789012", ocr_only=True
+        )
+
+        assert "TOTAL_RESOURCES: 2" in result  # underlying count unchanged
+        assert "RESOURCES_WITH_OCR_TEXT: 1" in result
+        # Listed section has only the resource with OCR text.
+        assert "resource_id: res2" in result
+        assert "resource_id: res1" not in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_ocr_only_true_with_no_ocr_resources(self, mock_get_client):
+        """ocr_only=True with resources but none OCRed -> informative empty message."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([
+            _make_resource("res1", ocr_text="", ocr_status=0),
+        ])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn(
+            "12345678901234567890123456789012", ocr_only=True
+        )
+
+        assert "TOTAL_RESOURCES: 1" in result
+        assert "RESOURCES_WITH_OCR_TEXT: 0" in result
+        assert "1 resource(s) attached but none have OCR text yet" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_resources_sorted_by_id(self, mock_get_client):
+        """Output ordering is deterministic by resource ID, regardless of input order."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([
+            _make_resource("zzz", title="last"),
+            _make_resource("aaa", title="first"),
+            _make_resource("mmm", title="middle"),
+        ])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn("12345678901234567890123456789012")
+
+        # The IDs should appear in sorted order.
+        pos_a = result.find("resource_id: aaa")
+        pos_m = result.find("resource_id: mmm")
+        pos_z = result.find("resource_id: zzz")
+        assert 0 < pos_a < pos_m < pos_z
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_pagination_concatenates_pages(self, mock_get_client):
+        """has_more=True triggers another page; both pages are merged."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.side_effect = [
+            _make_page([_make_resource("res1")], has_more=True),
+            _make_page([_make_resource("res2")], has_more=False),
+        ]
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn("12345678901234567890123456789012")
+
+        assert "TOTAL_RESOURCES: 2" in result
+        assert "resource_id: res1" in result
+        assert "resource_id: res2" in result
+        # Two calls, with page=1 then page=2.
+        assert mock_client.get_resources.call_count == 2
+        page_args = [
+            call.kwargs.get("page") for call in mock_client.get_resources.call_args_list
+        ]
+        assert page_args == [1, 2]
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_ocr_status_labels(self, mock_get_client):
+        """All Joplin ocr_status integers map to readable labels."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([
+            _make_resource("a", ocr_status=0),
+            _make_resource("b", ocr_status=1),
+            _make_resource("c", ocr_status=2),
+            _make_resource("d", ocr_status=3),
+        ])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn("12345678901234567890123456789012")
+
+        assert "ocr_status: none" in result
+        assert "ocr_status: pending" in result
+        assert "ocr_status: done" in result
+        assert "ocr_status: error" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_unknown_ocr_status_maps_to_unknown(self, mock_get_client):
+        """Missing or unrecognised ocr_status renders as 'unknown', not 'None'."""
+        from joplin_mcp.tools.notes import get_note_resources
+
+        mock_client = MagicMock()
+        mock_client.get_resources.return_value = _make_page([
+            _make_resource("a", ocr_status=None),
+            _make_resource("b", ocr_status=99),
+        ])
+        mock_get_client.return_value = mock_client
+
+        result = await get_note_resources.fn("12345678901234567890123456789012")
+
+        assert "ocr_status: unknown" in result
+        assert "ocr_status: None" not in result
+
+
 class TestFindInNoteTool:
     """Tests for find_in_note tool."""
 
@@ -1033,6 +978,88 @@ class TestEditNoteTool:
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_replace_names_the_note(self, mock_get_client):
+        """The edited note is already in hand, so the response should name it."""
+        from joplin_mcp.tools.notes import edit_note
+
+        note = self._make_note("Fix the color here.")
+        mock_client = MagicMock()
+        mock_client.get_note.return_value = note
+        mock_get_client.return_value = mock_client
+
+        fn = _get_tool_fn(edit_note)
+        result = await fn(
+            "12345678901234567890123456789012",
+            new_string="colour",
+            old_string="color",
+        )
+
+        assert 'Replaced 1 occurrence(s) in "Test Note".' in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_append_names_the_note(self, mock_get_client):
+        """Positional inserts read as 'to' the note rather than 'in' it."""
+        from joplin_mcp.tools.notes import edit_note
+
+        note = self._make_note("Existing content.")
+        mock_client = MagicMock()
+        mock_client.get_note.return_value = note
+        mock_get_client.return_value = mock_client
+
+        fn = _get_tool_fn(edit_note)
+        result = await fn(
+            "12345678901234567890123456789012",
+            new_string="tail",
+            position="end",
+        )
+
+        assert 'characters to "Test Note".' in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_omits_note_name_when_untitled(self, mock_get_client):
+        """An untitled note must not produce an empty quoted name."""
+        from joplin_mcp.tools.notes import edit_note
+
+        note = self._make_note("Fix the color here.")
+        note.title = "   "
+        mock_client = MagicMock()
+        mock_client.get_note.return_value = note
+        mock_get_client.return_value = mock_client
+
+        fn = _get_tool_fn(edit_note)
+        result = await fn(
+            "12345678901234567890123456789012",
+            new_string="colour",
+            old_string="color",
+        )
+
+        assert result == "EDIT_NOTE: Replaced 1 occurrence(s)."
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_quoted_note_name_stays_unambiguous(self, mock_get_client):
+        """A title containing double quotes must not break the quoted name."""
+        from joplin_mcp.tools.notes import edit_note
+
+        note = self._make_note("Fix the color here.")
+        note.title = 'The "Big" Refactor'
+        mock_client = MagicMock()
+        mock_client.get_note.return_value = note
+        mock_get_client.return_value = mock_client
+
+        fn = _get_tool_fn(edit_note)
+        result = await fn(
+            "12345678901234567890123456789012",
+            new_string="colour",
+            old_string="color",
+        )
+
+        assert result == "EDIT_NOTE: Replaced 1 occurrence(s) in \"The 'Big' Refactor\"."
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
     async def test_append_to_note(self, mock_get_client):
         """Should append text to end of note body."""
         from joplin_mcp.tools.notes import edit_note
@@ -1177,7 +1204,7 @@ class TestEditNoteTool:
         assert "must be 'beginning' or 'end'" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notes._clear_note_cache")
+    @patch("joplin_mcp.note_view.clear_note_cache")
     @patch("joplin_mcp.tools.notes.get_joplin_client")
     async def test_cache_invalidation(self, mock_get_client, mock_clear_cache):
         """Should clear note cache after editing."""

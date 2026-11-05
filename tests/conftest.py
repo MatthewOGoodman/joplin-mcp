@@ -6,10 +6,54 @@ including mock Joplin server responses, test data, and testing utilities.
 """
 
 import json
+from contextlib import contextmanager
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp.exceptions import ValidationError as FastMCPValidationError
+from pydantic import ValidationError as PydanticValidationError
+
+from joplin_mcp.config import get_config, set_config
+
+
+@contextmanager
+def override_config(**fields):
+    """Swap the live config for the with-block; restore on exit.
+
+    Usable in two styles:
+
+        # As a direct import (for inline use):
+        from conftest import override_config
+        with override_config(notebook_allowlist=["AI"]):
+            ...
+
+        # As a pytest fixture parameter:
+        def test_foo(override_config):
+            with override_config(notebook_allowlist=["AI"]):
+                ...
+
+    Mutates a module global; not safe under pytest-xdist.
+    """
+    snapshot = get_config()
+    set_config(snapshot.copy(**fields))
+    try:
+        yield get_config()
+    finally:
+        set_config(snapshot)
+
+
+# Which exception a tool.run({...}) call raises when Pydantic rejects an
+# argument. Use this in pytest.raises for any assertion about argument
+# validation (min_length, max_length, required fields); do NOT use it for
+# errors the tool body raises itself, which stay plain ValueError.
+#
+# fastmcp >= 3.4 catches the Pydantic error at the argument boundary and
+# re-raises it as fastmcp.exceptions.ValidationError, which does not inherit
+# from Pydantic's. Earlier 3.x let the original through. The message is
+# preserved either way, so match= still works; only the type moved. Accepting
+# both keeps the suite green across the whole fastmcp>=3,<4 range we support.
+ARG_VALIDATION_ERRORS = (PydanticValidationError, FastMCPValidationError)
 
 # Test data constants
 TEST_TOKEN = "test_token_123456789"
@@ -300,6 +344,165 @@ def reset_mocks():
     # This runs after each test to ensure clean state
 
 
+@pytest.fixture(autouse=True)
+def _reset_notebook_resolver_cache():
+    """Reset the default notebook resolver's cache between tests.
+
+    The resolver is module-level state, so tests that warm its cache (whether
+    through a real call or by writing directly) would otherwise leak data into
+    later tests. Clearing before and after each test gives every test a cold
+    cache.
+    """
+    from joplin_mcp.notebook_utils import notebook_resolver
+
+    notebook_resolver.invalidate()
+    yield
+    notebook_resolver.invalidate()
+
+
+# === ALLOWLIST TEST HELPERS ===
+# Shared by test_pathspec_patterns.py, test_notebook_allowlist_access.py,
+# and test_integration_allowlist.py.
+
+
+def make_notebook_map(paths):
+    """Build a notebook map from a dict of {notebook_id: "Parent/Child/Leaf"} paths.
+
+    Returns a map suitable for get_notebook_map_cached, where each notebook ID
+    maps to {title, parent_id} and the hierarchy is reconstructed from paths.
+    """
+    from types import SimpleNamespace
+
+    nb_map = {}
+    path_to_id = {}
+
+    for nb_id, path_str in paths.items():
+        parts = path_str.split("/")
+        parent_id = None
+        for i, part in enumerate(parts):
+            partial_path = "/".join(parts[: i + 1])
+            if partial_path not in path_to_id:
+                if i == len(parts) - 1:
+                    node_id = nb_id
+                else:
+                    node_id = f"auto_{partial_path.replace('/', '_').lower()}"
+                path_to_id[partial_path] = node_id
+                nb_map[node_id] = {
+                    "title": part,
+                    "parent_id": parent_id,
+                }
+            parent_id = path_to_id[partial_path]
+
+    return nb_map
+
+
+def mock_client_fn(nb_map):
+    """Create a mock client_fn that returns a client whose get_all_notebooks
+    returns notebook objects matching the given map."""
+    from types import SimpleNamespace
+
+    notebooks = []
+    for nb_id, info in nb_map.items():
+        nb = SimpleNamespace(
+            id=nb_id,
+            title=info["title"],
+            parent_id=info["parent_id"] or "",
+        )
+        notebooks.append(nb)
+
+    mock_client = MagicMock()
+    mock_client.get_all_notebooks.return_value = notebooks
+    return lambda: mock_client
+
+
+@pytest.fixture
+def allowlist_config():
+    """Create a JoplinMCPConfig with notebook_allowlist for integration tests.
+
+    Returns a config with a realistic allowlist containing exact path, glob,
+    and negation patterns. Tests can override the allowlist attribute as needed.
+    """
+    from joplin_mcp.config import JoplinMCPConfig
+
+    config = JoplinMCPConfig(
+        token="test_token_for_allowlist",
+        notebook_allowlist=["Projects", "Projects/*", "AI"],
+    )
+    return config
+
+
+@pytest.fixture
+def mock_notebook_hierarchy():
+    """Set up a mock notebook tree for allowlist integration tests.
+
+    Hierarchy:
+        Root
+        +-- Projects (id: proj_root_id_00000000000000000)
+        |   +-- Work (id: proj_work_id_00000000000000000)
+        |   +-- Fun  (id: proj_fun_id_000000000000000000)
+        +-- Personal (id: personal_id_000000000000000000)
+        |   +-- Diary (id: diary_id_00000000000000000000)
+        +-- AI (id: ai_id_000000000000000000000000)
+
+    Returns a dict with:
+        - notebooks: list of SimpleNamespace objects
+        - nb_map: dict mapping id -> {title, parent_id}
+        - ids: dict mapping friendly name -> id
+    """
+    from types import SimpleNamespace
+
+    ids = {
+        "Projects": "proj_root_id_00000000000000000",
+        "Work": "proj_work_id_00000000000000000",
+        "Fun": "proj_fun_id_000000000000000000",
+        "Personal": "personal_id_000000000000000000",
+        "Diary": "diary_id_00000000000000000000",
+        "AI": "ai_id_000000000000000000000000",
+    }
+
+    notebooks = [
+        SimpleNamespace(id=ids["Projects"], title="Projects", parent_id=""),
+        SimpleNamespace(id=ids["Work"], title="Work", parent_id=ids["Projects"]),
+        SimpleNamespace(id=ids["Fun"], title="Fun", parent_id=ids["Projects"]),
+        SimpleNamespace(id=ids["Personal"], title="Personal", parent_id=""),
+        SimpleNamespace(id=ids["Diary"], title="Diary", parent_id=ids["Personal"]),
+        SimpleNamespace(id=ids["AI"], title="AI", parent_id=""),
+    ]
+
+    nb_map = {}
+    for nb in notebooks:
+        nb_map[nb.id] = {
+            "title": nb.title,
+            "parent_id": nb.parent_id or None,
+        }
+
+    return {"notebooks": notebooks, "nb_map": nb_map, "ids": ids}
+
+
+@pytest.fixture(autouse=True)
+def _no_notebook_allowlist():
+    """Disable notebook allowlist for all tests by default.
+
+    Prevents real allowlist configuration from leaking into tests. Tests
+    that need an allowlist should call override_config (as fixture or
+    direct import) or use the per-file mock_allowlist_config fixture.
+
+    Snapshots the live config by identity and restores on exit.
+    """
+    snapshot = get_config()
+    set_config(snapshot.copy(notebook_allowlist=None))
+    try:
+        yield
+    finally:
+        set_config(snapshot)
+
+
+@pytest.fixture(name="override_config")
+def _override_config_fixture():
+    """Pytest-fixture form of override_config; returns the callable itself."""
+    return override_config
+
+
 @pytest.fixture
 def anyio_backend():
     """Configure anyio backend for async testing."""
@@ -315,6 +518,40 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "unit: mark test as a unit test")
     config.addinivalue_line("markers", "integration: mark test as an integration test")
     config.addinivalue_line("markers", "slow: mark test as slow running")
+
+
+def pytest_addoption(parser):
+    """Register the --run-e2e opt-in flag for live-Joplin tests.
+
+    The e2e suite creates and deletes real notes, notebooks, and tags on
+    the developer's local Joplin instance, so a routine ``pytest`` run is
+    non-destructive by default; pass ``--run-e2e`` before releases or
+    when changes touch code paths the unit tests don't exercise.
+    """
+    parser.addoption(
+        "--run-e2e",
+        action="store_true",
+        help=(
+            "Run e2e tests against a live Joplin instance. "
+            "Creates/deletes real notes, notebooks, and tags — don't run "
+            "routinely; use before releases or when changes touch code "
+            "paths unit tests don't exercise (notebook allowlist, FTS "
+            "search, joppy client). Without this flag, e2e-marked tests "
+            "are skipped."
+        ),
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip e2e-marked tests unless --run-e2e is set."""
+    if config.getoption("--run-e2e"):
+        return
+    skip_e2e = pytest.mark.skip(
+        reason="opt-in: pass --run-e2e (mutates live Joplin data)"
+    )
+    for item in items:
+        if "e2e" in item.keywords:
+            item.add_marker(skip_e2e)
 
 
 @pytest.fixture

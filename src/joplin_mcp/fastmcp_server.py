@@ -1,7 +1,7 @@
 """FastMCP-based Joplin MCP Server Implementation.
 
 📝 FINDING NOTES:
-- find_notes(query, limit, offset, task, completed) - Find notes by text OR list all notes with pagination ⭐ MAIN FUNCTION FOR TEXT SEARCHES AND LISTING ALL NOTES!
+- find_notes(query, limit, offset, task, completed, trash) - Find notes by text OR list all notes with pagination ⭐ MAIN FUNCTION FOR TEXT SEARCHES AND LISTING ALL NOTES! Use trash=True with query="*" to list trashed notes.
 - find_notes_with_tag(tag_name, limit, offset, task, completed) - Find all notes with a specific tag with pagination ⭐ MAIN FUNCTION FOR TAG SEARCHES!
 - find_notes_in_notebook(notebook_name, limit, offset, task, completed) - Find all notes in a specific notebook with pagination ⭐ MAIN FUNCTION FOR NOTEBOOK SEARCHES!
 - find_in_note(note_id, pattern, limit, offset, case_sensitive, multiline, dotall) - Run regex searches inside a single note with context and pagination
@@ -10,6 +10,7 @@
 📋 MANAGING NOTES:
 - create_note(title, notebook_name, body) - Create a new note
 - get_note(note_id) - Get a specific note by ID with smart display (sections, line ranges, TOC)
+- get_note_resources(note_id, ocr_only) - List a note's resources, including OCR text from images/PDFs
 - get_links(note_id) - Extract all links to other notes from a note
 - update_note(note_id, title, body) - Update an existing note
 - edit_note(note_id, new_string, old_string, replace_all, position) - Precision edit note content
@@ -27,11 +28,18 @@
 - get_tags_by_note(note_id) - See what tags a note has
 
 📁 MANAGING NOTEBOOKS:
-- list_notebooks() - List all available notebooks
-- create_notebook(title) - Create a new notebook
+- list_notebooks() - List all available notebooks (surfaces each notebook's emoji icon, if set)
+- create_notebook(title, parent_name, emoji) - Create a new notebook (omit parent_name for top-level), optionally with an emoji icon
+- update_notebook(notebook_id, title, emoji, parent_name) - Rename, set emoji icon (emoji="" clears), or move under another parent (parent_name="/" for top-level)
+
+🗑️ TRASH MANAGEMENT:
+- restore_from_trash(item_id, item_type) - Restore a soft-deleted note or notebook (item_type: 'note' or 'notebook')
+- delete_note / delete_notebook move items to trash (soft delete); find_notes("*", trash=True) lists trashed notes
 """
 
 import datetime
+import json
+import re
 import time
 import logging
 import os
@@ -52,13 +60,16 @@ from typing_extensions import Annotated
 from joplin_mcp import __version__ as MCP_VERSION
 
 # Import our existing configuration for compatibility
-from joplin_mcp.config import JoplinMCPConfig
+from joplin_mcp.config import (
+    ConfigError,
+    JoplinMCPConfig,
+    get_config,
+    get_config_load_error,
+    set_config,
+)
 
 # Import content utilities
 from joplin_mcp.content_utils import (
-    calculate_content_stats,
-    create_content_preview,
-    create_content_preview_with_search,
     create_matching_lines_preview,
     create_toc_only,
     extract_frontmatter,
@@ -71,13 +82,10 @@ from joplin_mcp.content_utils import (
 # Import formatting utilities
 from joplin_mcp.formatting import (
     ItemType,
-    build_pagination_header,
-    build_pagination_summary,
     format_creation_success,
     format_delete_success,
-    format_find_in_note_summary,
+    format_restore_success,
     format_no_results_message,
-    format_note_metadata_lines,
     format_relation_success,
     format_update_success,
     get_item_emoji,
@@ -92,82 +100,13 @@ mcp = FastMCP(name="Joplin MCP Server", version=MCP_VERSION)
 # Type for generic functions
 T = TypeVar("T")
 
-# Global config instance for tool registration
-_config: Optional[JoplinMCPConfig] = None
 
-
-# Load configuration at module level for tool filtering
-def _load_module_config() -> JoplinMCPConfig:
-    """Load configuration at module level for tool registration filtering."""
-    from pathlib import Path
-
-    # Use the built-in auto-discovery that checks standard global config locations
-    # This includes: ~/.joplin-mcp.json, ~/.config/joplin-mcp/config.json, etc.
-    logger.info("Auto-discovering Joplin MCP configuration...")
-
-    try:
-        loaded_from: Optional[Path] = None
-
-        # Highest priority: explicit config path via environment
-        explicit_config = os.getenv("JOPLIN_MCP_CONFIG") or os.getenv(
-            "JOPLIN_CONFIG_FILE"
-        )
-        if explicit_config:
-            cfg_path = Path(explicit_config)
-            if cfg_path.exists():
-                logger.info(f"Using explicit configuration from: {cfg_path}")
-                config = JoplinMCPConfig.from_file(cfg_path)
-                loaded_from = cfg_path
-            else:
-                logger.warning(
-                    f"Explicit config path set but not found: {cfg_path}. Falling back to discovery."
-                )
-                config = JoplinMCPConfig.auto_discover()
-        else:
-            config = JoplinMCPConfig.auto_discover()
-
-        # Only emit the "not found" warning when we truly didn't load from any file
-        if loaded_from is None:
-            # See if auto-discovery found a file
-            for path in JoplinMCPConfig.get_default_config_paths():
-                if path.exists():
-                    loaded_from = path
-                    break
-            # Also check current directory (for development)
-            if loaded_from is None:
-                cwd = Path.cwd()
-                for path in [
-                    cwd / "joplin-mcp.json",
-                    cwd / "joplin-mcp.yaml",
-                    cwd / "joplin-mcp.yml",
-                ]:
-                    if path.exists():
-                        loaded_from = path
-                        break
-
-        if loaded_from is None:
-            logger.warning(
-                "No configuration file found. Using environment variables and defaults."
-            )
-        else:
-            logger.info(f"Successfully loaded configuration from: {loaded_from}")
-
-        return config
-
-    except Exception as e:
-        logger.error(f"Failed to load configuration: {e}")
-        logger.warning("Falling back to default configuration.")
-        return JoplinMCPConfig()
-
-
-# Load config for tool registration filtering
-_module_config = _load_module_config()
+# Log the enabled-tool count from the auto-discovered config. Auto-discovery
+# itself (and its file/path logging) lives in joplin_mcp.config.
 try:
-    enabled = sorted([k for k, v in _module_config.tools.items() if v])
-    logger.info(
-        "Module config loaded; enabled tools count=%d", len(enabled)
-    )
-    logger.debug("Enabled tools: %s", enabled)
+    _enabled = sorted([k for k, v in get_config().tools.items() if v])
+    logger.info("Module config loaded; enabled tools count=%d", len(_enabled))
+    logger.debug("Enabled tools: %s", _enabled)
 except Exception:
     pass
 
@@ -329,22 +268,12 @@ OptionalBoolType = Optional[
 def get_joplin_client() -> ClientApi:
     """Get a configured joppy client instance.
 
-    Priority:
-    1) Use runtime config if set (server --config)
-    2) Else use module config (auto-discovered on import, honors JOPLIN_MCP_CONFIG)
-    3) Else fall back to environment variables
+    Reads the live config via the resolver. Falls back to the JOPLIN_TOKEN
+    env var if the config has no token.
     """
-    # Prefer the runtime config if available, else the module-level config
-    config = _config or _module_config
+    config = get_config()
 
-    # If for some reason neither exists (unlikely), try loader
-    if config is None:
-        try:
-            config = JoplinMCPConfig.load()
-        except Exception:
-            config = None
-
-    if config and getattr(config, "token", None):
+    if config.token:
         return ClientApi(token=config.token, url=config.base_url)
 
     # Fallback to environment variables
@@ -359,84 +288,31 @@ def get_joplin_client() -> ClientApi:
     return ClientApi(token=token, url=url)
 
 
-# === NOTEBOOK PATH UTILITIES ===
-# Moved to joplin_mcp/notebook_utils.py - re-exported for backwards compatibility
+# === NOTEBOOK RESOLVER ===
+# All notebook cache, path resolution, and invalidation live in
+# joplin_mcp.notebook_utils. Tools import the resolver directly from there.
+# init_resolver binds the Joplin client factory to the default resolver so it
+# can refresh its cache and perform mutations.
 
 from joplin_mcp.notebook_utils import (
     _build_notebook_map,
     _compute_notebook_path,
-    _resolve_notebook_by_path,
-    get_notebook_id_by_name,
-    get_notebook_map_cached,
-    invalidate_notebook_map_cache,
+    init_resolver,
+    notebook_resolver,
 )
 
-
-def apply_pagination(
-    notes: List[Any], limit: int, offset: int
-) -> tuple[List[Any], int]:
-    """Apply pagination to a list of notes and return paginated results with total count."""
-    total_count = len(notes)
-    start_index = offset
-    end_index = offset + limit
-    paginated_notes = notes[start_index:end_index]
-    return paginated_notes, total_count
-
-
-def build_search_filters(task: Optional[bool], completed: Optional[bool]) -> List[str]:
-    """Build search filter parts for task and completion status."""
-    search_parts = []
-
-    # Add task filter if specified
-    if task is not None:
-        if task:
-            search_parts.append("type:todo")
-        else:
-            search_parts.append("type:note")
-
-    # Add completion filter if specified (only relevant for tasks)
-    if completed is not None and task is True:
-        if completed:
-            search_parts.append("iscompleted:1")
-        else:
-            search_parts.append("iscompleted:0")
-
-    return search_parts
-
-
-def format_search_criteria(
-    base_criteria: str, task: Optional[bool], completed: Optional[bool]
-) -> str:
-    """Format search criteria description with filters."""
-    criteria_parts = [base_criteria]
-
-    if task is True:
-        criteria_parts.append("(tasks only)")
-    elif task is False:
-        criteria_parts.append("(regular notes only)")
-
-    if completed is True:
-        criteria_parts.append("(completed)")
-    elif completed is False:
-        criteria_parts.append("(uncompleted)")
-
-    return " ".join(criteria_parts)
-
-
-def format_no_results_with_pagination(
-    item_type: str, criteria: str, offset: int, limit: int
-) -> str:
-    """Format no results message with pagination info."""
-    if offset > 0:
-        page_info = f" - Page {(offset // limit) + 1} (offset {offset})"
-        return format_no_results_message(item_type, criteria + page_info)
-    else:
-        return format_no_results_message(item_type, criteria)
+# Bind via a thunk so the resolver looks up get_joplin_client in this module's
+# namespace on every call. Tests that patch the module attribute (e.g. the e2e
+# fixture) need their patches to flow through to the resolver.
+init_resolver(lambda: get_joplin_client())
 
 
 # Common fields list for note operations
+# deleted_time included so the DELETED metadata line surfaces on every
+# note-returning path (get_note, find_notes_in_notebook, find_notes_with_tag),
+# not just find_notes(trash=True).
 COMMON_NOTE_FIELDS = (
-    "id,title,body,created_time,updated_time,parent_id,is_todo,todo_completed,todo_due"
+    "id,title,body,created_time,updated_time,parent_id,is_todo,todo_completed,todo_due,deleted_time"
 )
 
 
@@ -448,7 +324,12 @@ COMMON_NOTE_FIELDS = (
 # format_timestamp, calculate_content_stats
 
 def process_search_results(results: Any) -> List[Any]:
-    """Process search results from joppy client into a consistent list format."""
+    """Normalise a joppy search/list response into a Python list.
+
+    Shared with ``tools/notes.py``, ``tools/tags.py``, and
+    ``format_tag_list_with_counts`` below -- belongs in fastmcp_server
+    while no neutral home exists for joppy adapters.
+    """
     if hasattr(results, "items"):
         return results.items or []
     elif isinstance(results, list):
@@ -457,11 +338,53 @@ def process_search_results(results: Any) -> List[Any]:
         return [results] if results else []
 
 
-def filter_items_by_title(items: List[Any], query: str) -> List[Any]:
-    """Filter items by title using case-insensitive search."""
-    return [
-        item for item in items if query.lower() in getattr(item, "title", "").lower()
-    ]
+_TOKEN_QUERY_RE = re.compile(r"([?&]token=)[^&\s\"'`)\]]+", re.IGNORECASE)
+# file:// URLs leak the absolute install path. Match the whole URL and stop
+# at a delimiter, whitespace, or a backslash (so JSON-escape sequences like
+# "\\n" after a path don't get gobbled into the match).
+_FILE_URL_RE = re.compile(r"file://[^\s\"'`)\]<>\\]+")
+# Drop JS stack frames ("    at SomeFn (loc)"). joppy stringifies HTTPError
+# with the Joplin response body inline, which Joplin populates with a TS
+# stack trace — often as a JSON-encoded string with escaped "\\n" between
+# frames, so we don't use re.MULTILINE; we match the inline shape wherever
+# it appears.
+_JS_FRAME_RE = re.compile(r"[ \t]+at\s\S+\s*\([^)]*\)")
+# Absolute filesystem paths leak the local install location and OS user.
+# Match any absolute path (Unix "/foo..." or Windows "C:\foo..."), terminating
+# at a quote, bracket, angle, or newline. Spaces inside the match are allowed
+# so "/Applications/Some App.app/..." and "C:\Program Files\Joplin\..." get
+# fully scrubbed. Distinguishing a filesystem path from a URL path is purely
+# contextual: in "http://host/foo" the "/foo" is preceded by an alphanumeric
+# (the host) or another "/" (the "//" after "http:"), whereas a real path
+# follows whitespace, a delimiter, or start-of-string. The Unix alternative
+# uses a negative lookbehind to enforce that; the Windows alternative uses
+# \b so it doesn't eat the "p:" in "http://".
+_ABS_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9/.])/[A-Za-z][^\"'`)\]<>\r\n]*"
+    r"|\b[A-Za-z]:[\\/][^\"'`)\]<>\r\n]*"
+)
+
+
+def _sanitise_error(text: str) -> str:
+    """Scrub upstream stack traces, filesystem paths, and token params.
+
+    joppy stringifies requests.HTTPError with the Joplin server response body
+    inline. Joplin populates that body with TypeScript stack-trace lines and
+    absolute paths from its install location (frequently wrapped in file://
+    URLs and embedded in a JSON string with escaped newlines), and the
+    request URL carries the full API token. Strip all of those before the
+    message reaches MCP clients or logs — information disclosure in a
+    hostile-agent setting and confusing UX in general.
+    """
+    text = _TOKEN_QUERY_RE.sub(r"\1***", text)
+    text = _FILE_URL_RE.sub("<path>", text)
+    text = _JS_FRAME_RE.sub("", text)
+    text = _ABS_PATH_RE.sub("<path>", text)
+    # Collapse blank-line gaps and runs of escaped newlines left by stripped
+    # frames so the message doesn't end up as "...\\n\\n\\n...".
+    text = re.sub(r"(?:\\n[ \t]*){2,}", r"\\n", text)
+    text = re.sub(r"\n[ \t]*\n+", "\n", text)
+    return text.strip()
 
 
 def with_client_error_handling(operation_name: str):
@@ -475,32 +398,51 @@ def with_client_error_handling(operation_name: str):
             except Exception as e:
                 if "parameter is required" in str(e) or "must be between" in str(e):
                     raise e  # Re-raise validation errors as-is
-                raise ValueError(f"{operation_name} failed: {str(e)}")
+                raise ValueError(f"{operation_name} failed: {_sanitise_error(str(e))}")
 
         return wrapper
 
     return decorator
 
 
-def conditional_tool(tool_name: str):
-    """Decorator to conditionally register tools based on configuration."""
+# Tool registry: every @create_tool decoration appends here at import time.
+# All tools are eagerly registered with the module ``mcp`` so test paths
+# (.fn / .run) work without an explicit registration step. The gating
+# decision lives in register_tools(), which reshapes ``mcp``'s tool manager
+# to reflect a given config -- so main() can honour the runtime config
+# (e.g. --config-file) instead of being frozen at import time.
+_tool_registry: List[tuple] = []  # list of (tool_name, tool_obj)
 
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        # Check if tool is enabled in configuration
-        if _module_config.tools.get(
-            tool_name, True
-        ):  # Default to True if not specified
-            # Tool is enabled - register it with FastMCP
-            logger.debug("Registering tool: %s", tool_name)
-            return mcp.tool()(func)
+
+def register_tools(target_mcp: FastMCP, config: "JoplinMCPConfig") -> List[str]:
+    """Reshape ``target_mcp``'s tool registry so only tools enabled in
+    ``config.tools`` are exposed. Tools missing from ``config.tools`` default
+    to enabled.
+
+    Decoration eagerly registers every tool; this function is the one place
+    where runtime config takes effect, so it owns both adding (for tools
+    that came back after a previous filter) and removing (for tools the
+    config disables). Returns the resulting list of enabled tool names.
+
+    Uses fastmcp v3's ``local_provider.add_tool`` / ``remove_tool`` API:
+    do a remove-all round-trip then re-add the enabled set, so toggling
+    config across reconfigures works in both directions.
+    """
+    enabled: List[str] = []
+    for tool_name, _ in _tool_registry:
+        try:
+            target_mcp.local_provider.remove_tool(tool_name)
+        except Exception:
+            pass  # already absent (first-run or previously filtered out)
+    for tool_name, tool_obj in _tool_registry:
+        if config.tools.get(tool_name, True):
+            target_mcp.local_provider.add_tool(tool_obj)
+            enabled.append(tool_name)
         else:
-            # Tool is disabled - return function without registering
             logger.info(
-                f"Tool '{tool_name}' disabled in configuration - not registering"
+                "Tool '%s' disabled in configuration", tool_name,
             )
-            return func
-
-    return decorator
+    return enabled
 
 
 def _get_item_id_by_name(
@@ -510,12 +452,16 @@ def _get_item_id_by_name(
     fields: str,
     not_found_hint: str = "",
 ) -> str:
-    """Generic helper to find notebook/tag ID by name with helpful error messages.
+    """Generic helper to find an item ID by name with helpful error messages.
+
+    Notebook lookups go through get_notebook_id_by_name which walks the
+    allowlist-filtered cache directly; this helper is used for tag lookups
+    (and any future item type that doesn't need allowlist filtering).
 
     Args:
         name: The item name to search for
-        item_type: Type of item for error messages (e.g., "notebook", "tag")
-        fetch_fn: Function to fetch all items (e.g., client.get_all_notebooks)
+        item_type: Type of item for error messages (e.g., "tag")
+        fetch_fn: Function to fetch all items (e.g., client.get_all_tags)
         fields: Fields to request from the API
         not_found_hint: Optional hint to append to "not found" error message
 
@@ -539,28 +485,14 @@ def _get_item_id_by_name(
         )
 
     if len(matching_items) > 1:
-        if item_type == "notebook":
-            # Show full paths for notebooks to help disambiguation
-            notebooks_map = get_notebook_map_cached()
-            item_paths = [
-                _compute_notebook_path(getattr(item, 'id', ''), notebooks_map, sep="/")
-                or getattr(item, 'title', 'Untitled')
-                for item in matching_items
-            ]
-            paths_str = ", ".join(f"'{p}'" for p in item_paths)
-            raise ValueError(
-                f"Multiple notebooks found with name '{name}'. "
-                f"Use full path to specify: {paths_str}"
-            )
-        else:
-            item_details = [
-                f"'{getattr(item, 'title', 'Untitled')}' (ID: {getattr(item, 'id', 'unknown')})"
-                for item in matching_items
-            ]
-            raise ValueError(
-                f"Multiple {item_type}s found with name '{name}': {', '.join(item_details)}. "
-                "Please be more specific."
-            )
+        item_details = [
+            f"'{getattr(item, 'title', 'Untitled')}' (ID: {getattr(item, 'id', 'unknown')})"
+            for item in matching_items
+        ]
+        raise ValueError(
+            f"Multiple {item_type}s found with name '{name}': {', '.join(item_details)}. "
+            "Please be more specific."
+        )
 
     item_id = getattr(matching_items[0], "id", None)
     if not item_id:
@@ -594,15 +526,60 @@ def get_tag_id_by_name(name: str) -> str:
 # === FORMATTING UTILITIES ===
 # Pure formatting functions imported from joplin_mcp.formatting:
 # ItemType, get_item_emoji, format_creation_success, format_update_success,
-# format_delete_success, format_relation_success, format_no_results_message,
-# build_pagination_header, build_pagination_summary, format_find_in_note_summary,
-# format_note_metadata_lines
+# format_delete_success, format_relation_success, format_no_results_message
+#
+# Note rendering (format_note_details, _collect_note_metadata,
+# _format_note_entry, _build_find_in_note_header,
+# format_search_results_with_pagination, plus build_pagination_header,
+# build_pagination_summary, format_find_in_note_summary,
+# format_note_metadata_lines) lives in joplin_mcp.note_view.
 #
 # Functions below depend on notebook path utilities or config:
 
 
-def format_item_list(items: List[Any], item_type: ItemType) -> str:
-    """Format a list of items (notebooks, tags, etc.) for display optimized for LLM comprehension."""
+def _format_notebook_icon(icon_field: Optional[str]) -> Optional[str]:
+    """Render a notebook's `icon` field as a single output line, or None to skip.
+
+    Joplin stores folder icons as a JSON string. The desktop picker writes
+    `{"type":1, "emoji":..., "name":...}` for emoji icons, but older entries
+    in the wild use the same shape without an explicit `type` field — so we
+    dispatch on the presence of an `emoji` key rather than `type==1`.
+    Anything else with `type==2` or a `dataUrl` is treated as an image,
+    surfaced as `icon: image` so the agent knows one exists. Empty or
+    unparseable values yield no line.
+    """
+    if not icon_field:
+        return None
+    try:
+        data = json.loads(icon_field)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    emoji = data.get("emoji")
+    if emoji:
+        return f"  emoji: {emoji}"
+    if data.get("type") == 2 or "dataUrl" in data:
+        return "  icon: image"
+    return None
+
+
+def format_item_list(
+    items: List[Any],
+    item_type: ItemType,
+    note_counts: Optional[Dict[str, int]] = None,
+    verbose: bool = False,
+) -> str:
+    """Format a list of items (notebooks, tags, etc.) for display optimized for LLM comprehension.
+
+    ``note_counts`` maps item id to note count. Callers compute it in one bulk
+    query rather than per item; when omitted the count line is left out.
+
+    ``verbose`` restores the fields an agent rarely acts on -- parent id, icon
+    and timestamps. They are off by default because this call is typically made
+    once per session just to resolve names to ids, where they were roughly half
+    the payload. ``path`` already encodes the hierarchy that ``parent_id`` gives.
+    """
     if not items:
         return f"ITEM_TYPE: {item_type.value}\nTOTAL_ITEMS: 0\nSTATUS: No {item_type.value}s found in Joplin instance"
 
@@ -630,9 +607,12 @@ def format_item_list(items: List[Any], item_type: ItemType) -> str:
             ]
         )
 
-        # Add parent folder ID if available (for notebooks)
+        if note_counts is not None:
+            result_parts.append(f"  note_count: {note_counts.get(item_id, 0)}")
+
+        # parent_id duplicates the hierarchy that path already spells out
         parent_id = getattr(item, "parent_id", None)
-        if parent_id:
+        if verbose and parent_id:
             result_parts.append(f"  parent_id: {parent_id}")
 
         # Add full path for notebooks
@@ -647,15 +627,20 @@ def format_item_list(items: List[Any], item_type: ItemType) -> str:
             except Exception:
                 pass
 
+            if verbose:
+                icon_line = _format_notebook_icon(getattr(item, "icon", None))
+                if icon_line:
+                    result_parts.append(icon_line)
+
         # Add creation time if available
-        created_time = getattr(item, "created_time", None)
+        created_time = getattr(item, "created_time", None) if verbose else None
         if created_time:
             created_date = format_timestamp(created_time, "%Y-%m-%d %H:%M")
             if created_date:
                 result_parts.append(f"  created: {created_date}")
 
         # Add update time if available
-        updated_time = getattr(item, "updated_time", None)
+        updated_time = getattr(item, "updated_time", None) if verbose else None
         if updated_time:
             updated_date = format_timestamp(updated_time, "%Y-%m-%d %H:%M")
             if updated_date:
@@ -666,317 +651,14 @@ def format_item_list(items: List[Any], item_type: ItemType) -> str:
     return "\n".join(result_parts)
 
 
-def format_item_details(item: Any, item_type: ItemType) -> str:
-    """Format a single item (notebook, tag, etc.) for detailed display."""
-    emoji = get_item_emoji(item_type)
-    title = getattr(item, "title", "Untitled")
-    item_id = getattr(item, "id", "unknown")
-
-    result_parts = [f"{emoji} **{title}**", f"ID: {item_id}", ""]
-
-    # Add metadata
-    metadata = []
-
-    # Timestamps
-    created_time = getattr(item, "created_time", None)
-    if created_time:
-        created_date = format_timestamp(created_time)
-        if created_date:
-            metadata.append(f"Created: {created_date}")
-
-    updated_time = getattr(item, "updated_time", None)
-    if updated_time:
-        updated_date = format_timestamp(updated_time)
-        if updated_date:
-            metadata.append(f"Updated: {updated_date}")
-
-    # Parent and path (for notebooks)
-    parent_id = getattr(item, "parent_id", None)
-    if parent_id:
-        metadata.append(f"Parent: {parent_id}")
-    if item_type == ItemType.notebook:
-        try:
-            nb_map = get_notebook_map_cached()
-            path = _compute_notebook_path(getattr(item, "id", None), nb_map)
-            if path:
-                metadata.append(f"Path: {path}")
-        except Exception:
-            pass
-
-    if metadata:
-        result_parts.append("**Metadata:**")
-        result_parts.extend(f"- {m}" for m in metadata)
-
-    return "\n".join(result_parts)
-
-
-def format_note_details(
-    note: Any,
-    include_body: bool = True,
-    context: str = "individual_notes",
-    original_body: Optional[str] = None,
+def format_tag_list_with_counts(
+    tags: List[Any], client: Any, verbose: bool = False
 ) -> str:
-    """Format a note for detailed display optimized for LLM comprehension."""
-    # Check content exposure settings
-    config = _module_config
-    should_show_content = config.should_show_content(context)
-    should_show_full_content = config.should_show_full_content(context)
+    """Format a list of tags with note counts for display optimized for LLM comprehension.
 
-    stats_body = original_body if original_body is not None else getattr(note, "body", "")
-    metadata = _collect_note_metadata(
-        note,
-        include_timestamps=True,
-        include_todo=True,
-        include_content_stats=True,
-        content_stats_body=stats_body,
-    )
-    result_parts = format_note_metadata_lines(metadata, style="upper")
-
-    # Add content last to avoid breaking metadata flow
-    if include_body:
-        body = getattr(note, "body", "")
-        if should_show_content:
-            if body:
-                if should_show_full_content:
-                    # Standard full content display
-                    result_parts.append(f"CONTENT: {body}")
-                else:
-                    # Show preview only (for search results context)
-                    max_length = config.get_max_preview_length()
-                    preview = create_content_preview(body, max_length)
-                    result_parts.append(f"CONTENT_PREVIEW: {preview}")
-            else:
-                result_parts.append("CONTENT: (empty)")
-        else:
-            # Content hidden due to privacy settings, but show status
-            if body:
-                result_parts.append("CONTENT: (hidden by privacy settings)")
-            else:
-                result_parts.append("CONTENT: (empty)")
-
-    return "\n".join(result_parts)
-
-
-def _format_note_entry(
-    note: Any,
-    index: int,
-    config: Any,
-    context: str,
-    original_query: Optional[str],
-    query: str,
-    notebooks_map: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
-) -> List[str]:
-    """Format a single note entry for search results."""
-    body = getattr(note, "body", "")
-
-    entry = [f"RESULT_{index}:"]
-
-    metadata = _collect_note_metadata(
-        note,
-        include_timestamps=True,
-        include_todo=True,
-        include_content_stats=True,
-        content_stats_body=body,
-        notebooks_map=notebooks_map,
-        timestamp_format="%Y-%m-%d %H:%M",
-    )
-    entry.extend(
-        format_note_metadata_lines(metadata, style="lower", indent="  ")
-    )
-
-    # Add content based on privacy settings
-    should_show_content = config.should_show_content(context)
-    if should_show_content and body:
-        if config.should_show_full_content(context):
-            entry.append(f"  content: {body}")
-        else:
-            search_query_for_terms = (
-                original_query if original_query is not None else query
-            )
-            preview = create_content_preview_with_search(
-                body, config.get_max_preview_length(), search_query_for_terms
-            )
-            entry.append(f"  content_preview: {preview}")
-    elif should_show_content:
-        entry.append("  content: (empty)")
-    else:
-        content_status = "(hidden by privacy settings)" if body else "(empty)"
-        entry.append(f"  content: {content_status}")
-
-    entry.append("")  # Empty line separator
-    return entry
-
-
-def _collect_note_metadata(
-    note: Any,
-    *,
-    include_timestamps: bool = True,
-    include_todo: bool = True,
-    include_content_stats: bool = True,
-    content_stats_body: Optional[str] = None,
-    notebooks_map: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
-    notebook_path_override: Optional[str] = None,
-    timestamp_format: Optional[str] = None,
-    default_notebook_id_if_missing: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Collect note metadata fields with configurable sections."""
-
-    metadata: Dict[str, Any] = {}
-    metadata["note_id"] = getattr(note, "id", "unknown")
-    metadata["title"] = getattr(note, "title", "Untitled")
-
-    if include_timestamps:
-        created_time = getattr(note, "created_time", None)
-        if created_time:
-            created_date = (
-                format_timestamp(created_time, timestamp_format)
-                if timestamp_format
-                else format_timestamp(created_time)
-            )
-            if created_date:
-                metadata["created"] = created_date
-
-        updated_time = getattr(note, "updated_time", None)
-        if updated_time:
-            updated_date = (
-                format_timestamp(updated_time, timestamp_format)
-                if timestamp_format
-                else format_timestamp(updated_time)
-            )
-            if updated_date:
-                metadata["updated"] = updated_date
-
-    parent_id = getattr(note, "parent_id", None)
-    if parent_id:
-        metadata["notebook_id"] = parent_id
-        notebook_path = notebook_path_override
-        if notebook_path is None:
-            map_to_use = notebooks_map
-            if map_to_use is None:
-                try:
-                    map_to_use = get_notebook_map_cached()
-                except Exception:
-                    map_to_use = None
-            if map_to_use is not None:
-                try:
-                    notebook_path = _compute_notebook_path(parent_id, map_to_use)
-                except Exception:
-                    notebook_path = None
-        if notebook_path:
-            metadata["notebook_path"] = notebook_path
-    elif default_notebook_id_if_missing is not None:
-        metadata["notebook_id"] = default_notebook_id_if_missing
-
-    if include_todo:
-        is_todo = bool(getattr(note, "is_todo", 0))
-        metadata["is_todo"] = is_todo
-        if is_todo:
-            todo_completed = bool(getattr(note, "todo_completed", 0))
-            metadata["todo_completed"] = todo_completed
-
-    if include_content_stats:
-        stats_source = (
-            content_stats_body
-            if content_stats_body is not None
-            else getattr(note, "body", "")
-        )
-        metadata["content_stats"] = calculate_content_stats(stats_source or "")
-
-    return metadata
-
-
-def _build_find_in_note_header(
-    note: Any,
-    pattern: str,
-    flags_str: str,
-    limit: int,
-    offset: int,
-    total_count: int,
-    showing_count: int,
-    *,
-    notebook_path_override: Optional[str] = None,
-    status: Optional[str] = None,
-) -> List[str]:
-    """Build the standardized header for find_in_note output."""
-
-    metadata = _collect_note_metadata(
-        note,
-        include_timestamps=False,
-        include_todo=False,
-        include_content_stats=False,
-        notebook_path_override=notebook_path_override,
-        default_notebook_id_if_missing="unknown",
-    )
-
-    parts = ["ITEM_TYPE: note_match"]
-    parts.extend(format_note_metadata_lines(metadata, style="upper"))
-
-    parts.extend(
-        [
-            f"PATTERN: {pattern}",
-            f"FLAGS: {flags_str}",
-            f"TOTAL_MATCHES: {total_count}",
-        ]
-    )
-
-    if status:
-        parts.append(status)
-
-    parts.extend(
-        [
-            "",
-            format_find_in_note_summary(
-                limit, offset, total_count, showing_count
-            ),
-        ]
-    )
-
-    return parts
-
-
-def format_search_results_with_pagination(
-    query: str,
-    results: List[Any],
-    total_count: int,
-    limit: int,
-    offset: int,
-    context: str = "search_results",
-    original_query: Optional[str] = None,
-    order_by: Optional[str] = None,
-    order_dir: Optional[str] = None,
-) -> str:
-    """Format search results with pagination information for display optimized for LLM comprehension."""
-    config = _module_config
-
-    # Build notebook map once for efficient path resolution
-    notebooks_map: Optional[Dict[str, Dict[str, Optional[str]]]] = None
-    try:
-        notebooks_map = get_notebook_map_cached()
-    except Exception:
-        notebooks_map = None  # Best-effort only
-
-    # Build all parts
-    result_parts = build_pagination_header(
-        query, total_count, limit, offset,
-        order_by=order_by, order_dir=order_dir,
-    )
-
-    # Add note entries
-    for i, note in enumerate(results, 1):
-        result_parts.extend(
-            _format_note_entry(
-                note, i, config, context, original_query, query, notebooks_map
-            )
-        )
-
-    # Add pagination summary
-    result_parts.extend(build_pagination_summary(total_count, limit, offset))
-
-    return "\n".join(result_parts)
-
-
-def format_tag_list_with_counts(tags: List[Any], client: Any) -> str:
-    """Format a list of tags with note counts for display optimized for LLM comprehension."""
+    ``verbose`` restores the creation and update timestamps, which an agent
+    resolving tag names to ids has no use for.
+    """
     if not tags:
         return (
             "ITEM_TYPE: tag\nTOTAL_ITEMS: 0\nSTATUS: No tags found in Joplin instance"
@@ -989,11 +671,13 @@ def format_tag_list_with_counts(tags: List[Any], client: Any) -> str:
         title = getattr(tag, "title", "Untitled")
         tag_id = getattr(tag, "id", "unknown")
 
-        # Get note count for this tag
+        # Counting needs the ids and nothing else: asking for COMMON_NOTE_FIELDS
+        # dragged every tagged note's full body across the wire per tag. get_notes
+        # is also paginated, so len() of one page capped the count at Joplin's
+        # page size -- get_all_notes unpaginates.
         try:
-            notes_result = client.get_notes(tag_id=tag_id, fields=COMMON_NOTE_FIELDS)
-            notes = process_search_results(notes_result)
-            note_count = len(notes)
+            notes = client.get_all_notes(tag_id=tag_id, fields="id")
+            note_count = len(process_search_results(notes))
         except Exception:
             note_count = 0
 
@@ -1008,14 +692,14 @@ def format_tag_list_with_counts(tags: List[Any], client: Any) -> str:
         )
 
         # Add creation time if available
-        created_time = getattr(tag, "created_time", None)
+        created_time = getattr(tag, "created_time", None) if verbose else None
         if created_time:
             created_date = format_timestamp(created_time, "%Y-%m-%d %H:%M")
             if created_date:
                 result_parts.append(f"  created: {created_date}")
 
         # Add update time if available
-        updated_time = getattr(tag, "updated_time", None)
+        updated_time = getattr(tag, "updated_time", None) if verbose else None
         if updated_time:
             updated_date = format_timestamp(updated_time, "%Y-%m-%d %H:%M")
             if updated_date:
@@ -1030,12 +714,25 @@ def format_tag_list_with_counts(tags: List[Any], client: Any) -> str:
 
 
 def create_tool(tool_name: str, operation_name: str):
-    """Create a tool decorator with consistent error handling."""
+    """Wrap a tool function with error handling and register it eagerly
+    with the module ``mcp``. Returns the FunctionTool so callers (including
+    tests) get the usual ``.fn`` (raw function) and ``.run({...})``
+    (MCP-validated path) attributes.
+
+    Uses ``mcp.local_provider.add_tool`` rather than the ``@mcp.tool()``
+    decorator: v3's decorator returns the original function rather than
+    the Tool object, which would break ``.run({...})``-based tests.
+    ``add_tool`` returns the FunctionTool either way.
+
+    The tool is also added to ``_tool_registry`` so ``register_tools()``
+    can later filter the active set based on a runtime config.
+    """
 
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        return conditional_tool(tool_name)(
-            with_client_error_handling(operation_name)(func)
-        )
+        wrapped = with_client_error_handling(operation_name)(func)
+        tool_obj = mcp.local_provider.add_tool(wrapped)
+        _tool_registry.append((tool_name, tool_obj))
+        return tool_obj
 
     return decorator
 
@@ -1178,26 +875,40 @@ def main(
     log_level: str = "info",
 ):
     """Main entry point for the FastMCP Joplin server."""
-    global _config
-
     try:
         logger.info("🚀 Starting FastMCP Joplin server...")
 
-        # Config loading as before...
+        # Runtime config supersedes the auto-discovered one -- one config
+        # identity at a time, wholesale replace.
         if config_file:
-            _config = JoplinMCPConfig.from_file(config_file)
+            set_config(JoplinMCPConfig.from_file_and_environment(config_file))
             logger.info(f"Runtime configuration loaded from {config_file}")
         else:
-            _config = _module_config
-            logger.info("Using module-level configuration for runtime")
+            logger.info("Using auto-discovered configuration for runtime")
+            # Discovery failed but had to return something so import could
+            # finish, and what it returns is more permissive than any config
+            # a user wrote. Serving that would let a typo in one variable
+            # enable write tools and drop the notebook allowlist.
+            discovery_error = get_config_load_error()
+            if discovery_error is not None:
+                raise ConfigError(
+                    "Refusing to start: the discovered configuration failed to "
+                    f"load ({discovery_error}). Running on defaults would enable "
+                    "tools and notebook access your configuration does not "
+                    "grant. Fix the configuration, or remove it to run on "
+                    "defaults deliberately."
+                )
 
-        registered_tools = list(mcp._tool_manager._tools.keys())
+        registered_tools = register_tools(mcp, get_config())
         logger.info(f"FastMCP server has {len(registered_tools)} tools registered")
         logger.info(f"Registered tools: {sorted(registered_tools)}")
 
         logger.info("Initializing Joplin client...")
         client = get_joplin_client()
         logger.info("Joplin client initialized successfully")
+
+        # Validate and log notebook allowlist at startup (D3, D6, D9)
+        notebook_resolver.validate_allowlist_at_startup(get_config(), client)
 
         # ---- Non-breaking compat toggle via env ----
         compat_env = os.getenv("MCP_HTTP_COMPAT", "").strip().lower() in {"1","true","yes","on"}

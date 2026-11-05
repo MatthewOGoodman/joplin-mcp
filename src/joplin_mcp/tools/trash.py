@@ -1,10 +1,12 @@
 """Trash management tools for Joplin MCP — list and restore soft-deleted items."""
+
 import datetime as dt_module
 import logging
 from typing import Annotated, Optional
 
 from pydantic import Field
 
+from joplin_mcp import note_view
 from joplin_mcp.content_utils import format_timestamp
 from joplin_mcp.fastmcp_server import (
     ItemType,
@@ -12,10 +14,11 @@ from joplin_mcp.fastmcp_server import (
     LimitType,
     OffsetType,
     create_tool,
-    format_update_success,
+    format_restore_success,
     get_joplin_client,
     validate_joplin_id,
 )
+from joplin_mcp.notebook_utils import notebook_resolver
 
 logger = logging.getLogger(__name__)
 
@@ -151,39 +154,38 @@ async def restore_from_trash(
     ],
     item_type: Annotated[
         str,
-        Field(description="Item type: 'note' or 'notebook'"),
+        Field(description="Item type: 'note' or 'notebook'. Restoring a notebook does not restore the items inside it."),
     ] = "note",
 ) -> str:
     """Restore a note or notebook from Joplin's trash.
 
     Restores a previously deleted item by setting its deleted_time back to 0.
-    The item reappears in its original notebook. If the original notebook was
-    also trashed, restore it first or the note may not be visible.
+    The item reappears in its original notebook.
+
+    Scope of restore (important):
+    - Only the single item identified by item_id is restored. When restoring
+      a notebook, its sub-notebooks and the notes inside stay trashed and
+      must each be restored individually. Joplin sets deleted_time on every
+      descendant when a notebook is trashed, and this tool clears it on one
+      item per call.
+    - If the original parent notebook is also trashed, restore the parent
+      first or the restored item may not be visible.
+
+    To find descendants to restore after restoring a notebook, use
+    find_notes(query="*", trash=True) and filter to the relevant subtree.
 
     Returns:
         str: Success message confirming the item was restored.
     """
     item_id = validate_joplin_id(item_id)
-    client = get_joplin_client()
 
     if item_type == "note":
-        client.modify_note(item_id, deleted_time=0)
-        return (
-            "OPERATION: RESTORE_FROM_TRASH\n"
-            "STATUS: SUCCESS\n"
-            "ITEM_TYPE: note\n"
-            f"ITEM_ID: {item_id}\n"
-            "MESSAGE: Note restored from trash to its original notebook"
-        )
+        client = get_joplin_client()
+        note_view.modify_note(client, item_id, deleted_time=0)
+        return format_restore_success(ItemType.note, item_id)
     elif item_type == "notebook":
-        client.modify_notebook(item_id, deleted_time=0)
-        return (
-            "OPERATION: RESTORE_FROM_TRASH\n"
-            "STATUS: SUCCESS\n"
-            "ITEM_TYPE: notebook\n"
-            f"ITEM_ID: {item_id}\n"
-            "MESSAGE: Notebook restored from trash"
-        )
+        notebook_resolver.modify_notebook(item_id, deleted_time=0)
+        return format_restore_success(ItemType.notebook, item_id)
     else:
         raise ValueError(
             f"item_type must be 'note' or 'notebook', got '{item_type}'"

@@ -5,13 +5,13 @@ import pytest
 from joplin_mcp.formatting import (
     ItemType,
     build_pagination_header,
-    build_pagination_summary,
     format_creation_success,
     format_delete_success,
     format_find_in_note_summary,
     format_no_results_message,
     format_note_metadata_lines,
     format_relation_success,
+    format_restore_success,
     format_update_success,
     get_item_emoji,
 )
@@ -114,6 +114,36 @@ class TestFormatUpdateSuccess:
         assert "ITEM_TYPE: tag" in result
         assert "tag updated successfully" in result
 
+    def test_update_success_omits_title_when_not_supplied(self):
+        """No title supplied should mean no TITLE line at all."""
+        result = format_update_success(ItemType.note, "note123456")
+        assert "TITLE:" not in result
+
+    def test_update_success_includes_title_when_supplied(self):
+        """A supplied title should be echoed on its own TITLE line."""
+        result = format_update_success(ItemType.note, "note123456", title="Renamed Note")
+        assert "TITLE: Renamed Note" in result
+        assert "ITEM_ID: note123456" in result
+        assert "note updated successfully" in result
+
+    def test_update_success_title_follows_item_id(self):
+        """TITLE should sit directly after ITEM_ID, matching creation messages."""
+        lines = format_update_success(
+            ItemType.notebook, "nb789", title="Archive"
+        ).splitlines()
+        assert lines.index("TITLE: Archive") == lines.index("ITEM_ID: nb789") + 1
+
+    def test_update_success_omits_empty_title(self):
+        """An empty title carries no information, so the line is dropped."""
+        result = format_update_success(ItemType.tag, "tag001", title="")
+        assert "TITLE:" not in result
+
+    def test_update_success_title_is_keyword_compatible(self):
+        """Passing title positionally and by keyword should agree."""
+        assert format_update_success(
+            ItemType.tag, "tag001", "important"
+        ) == format_update_success(ItemType.tag, "tag001", title="important")
+
 
 # === Tests for format_delete_success ===
 
@@ -122,27 +152,57 @@ class TestFormatDeleteSuccess:
     """Tests for format_delete_success function."""
 
     def test_note_delete_success(self):
-        """Should format note soft-delete success correctly (default)."""
+        """Should format note delete success correctly."""
         result = format_delete_success(ItemType.note, "deleted_note_id")
-        assert "OPERATION: SOFT_DELETE_NOTE" in result
+        assert "OPERATION: DELETE_NOTE" in result
         assert "STATUS: SUCCESS" in result
         assert "ITEM_TYPE: note" in result
         assert "ITEM_ID: deleted_note_id" in result
-        assert "moved to trash" in result
+        assert "note moved to trash" in result
+        assert "find_notes(\"*\", trash=True)" in result
+        assert "restore_from_trash" in result
+        assert "deleted_note_id" in result  # ID echoed in restore example
 
     def test_notebook_delete_success(self):
-        """Should format notebook soft-delete success correctly (default)."""
+        """Should format notebook delete success correctly."""
         result = format_delete_success(ItemType.notebook, "nb_to_delete")
-        assert "OPERATION: SOFT_DELETE_NOTEBOOK" in result
+        assert "OPERATION: DELETE_NOTEBOOK" in result
         assert "ITEM_TYPE: notebook" in result
-        assert "moved to trash" in result
+        assert "notebook moved to trash" in result
+        # Notebook hint must NOT reference find_notes — that path only lists notes
+        assert "find_notes" not in result
+        assert "restore_from_trash" in result
+        assert "nb_to_delete" in result  # ID echoed in restore example
 
     def test_tag_delete_success(self):
-        """Should format tag permanent delete success correctly."""
-        result = format_delete_success(ItemType.tag, "tag_gone", soft_delete=False)
+        """Should format tag delete success correctly."""
+        result = format_delete_success(ItemType.tag, "tag_gone")
         assert "OPERATION: DELETE_TAG" in result
         assert "ITEM_TYPE: tag" in result
-        assert "deleted permanently" in result
+        assert "tag deleted successfully" in result
+
+
+# === Tests for format_restore_success ===
+
+
+class TestFormatRestoreSuccess:
+    """Tests for format_restore_success function."""
+
+    def test_note_restore_success(self):
+        """Should format note restore success correctly."""
+        result = format_restore_success(ItemType.note, "restored_note_id")
+        assert "OPERATION: RESTORE_NOTE" in result
+        assert "STATUS: SUCCESS" in result
+        assert "ITEM_TYPE: note" in result
+        assert "ITEM_ID: restored_note_id" in result
+        assert "restored successfully" in result
+
+    def test_notebook_restore_success(self):
+        """Should format notebook restore success correctly."""
+        result = format_restore_success(ItemType.notebook, "restored_nb_id")
+        assert "OPERATION: RESTORE_NOTEBOOK" in result
+        assert "ITEM_TYPE: notebook" in result
+        assert "restored successfully" in result
 
 
 # === Tests for format_relation_success ===
@@ -223,96 +283,58 @@ class TestFormatNoResultsMessage:
 
 
 class TestBuildPaginationHeader:
-    """Tests for build_pagination_header function."""
+    """The window is stated once; page numbers derive from offset and limit."""
 
     def test_first_page(self):
         """Should format first page header correctly."""
-        header = build_pagination_header("test query", total_count=50, limit=10, offset=0)
+        header = build_pagination_header(
+            "test query", total_count=50, limit=10, offset=0, include_hints=True
+        )
         assert "SEARCH_QUERY: test query" in header
-        assert "TOTAL_RESULTS: 50" in header
-        assert "SHOWING_RESULTS: 1-10" in header
-        assert "CURRENT_PAGE: 1" in header
-        assert "TOTAL_PAGES: 5" in header
-        assert "LIMIT: 10" in header
-        assert "OFFSET: 0" in header
-        # Should include next page hint
+        assert "RESULTS: 1-10 of 50 (offset=0, limit=10)" in header
         assert any("NEXT_PAGE:" in line for line in header)
         assert any("offset=10" in line for line in header)
 
     def test_middle_page(self):
         """Should format middle page header correctly."""
-        header = build_pagination_header("search", total_count=100, limit=20, offset=40)
-        assert "SHOWING_RESULTS: 41-60" in header
-        assert "CURRENT_PAGE: 3" in header
-        assert "TOTAL_PAGES: 5" in header
+        header = build_pagination_header(
+            "search", total_count=100, limit=20, offset=40, include_hints=True
+        )
+        assert "RESULTS: 41-60 of 100 (offset=40, limit=20)" in header
         assert any("offset=60" in line for line in header)
 
     def test_last_page(self):
         """Should format last page without next page hint."""
         header = build_pagination_header("query", total_count=25, limit=10, offset=20)
-        assert "SHOWING_RESULTS: 21-25" in header
-        assert "CURRENT_PAGE: 3" in header
-        assert "TOTAL_PAGES: 3" in header
-        # Should NOT include next page hint
+        assert "RESULTS: 21-25 of 25 (offset=20, limit=10)" in header
         assert not any("NEXT_PAGE:" in line for line in header)
 
     def test_single_page(self):
         """Should handle single page results correctly."""
         header = build_pagination_header("small", total_count=5, limit=10, offset=0)
-        assert "SHOWING_RESULTS: 1-5" in header
-        assert "CURRENT_PAGE: 1" in header
-        assert "TOTAL_PAGES: 1" in header
+        assert "RESULTS: 1-5 of 5 (offset=0, limit=10)" in header
         assert not any("NEXT_PAGE:" in line for line in header)
 
     def test_empty_results(self):
         """Should handle empty results correctly."""
         header = build_pagination_header("empty", total_count=0, limit=10, offset=0)
-        assert "SHOWING_RESULTS: 0-0" in header
-        assert "TOTAL_RESULTS: 0" in header
+        assert "RESULTS: 0 of 0 (offset=0, limit=10)" in header
 
     def test_offset_beyond_results(self):
-        """Should handle offset beyond total results."""
+        """An empty page past the end reports no span rather than a fake one."""
         header = build_pagination_header("far", total_count=10, limit=20, offset=100)
-        # When offset > total_count, count=0, start_result=0, end_result=offset+count=100
-        # This is the actual behavior - shows 0-100 range even though no results
-        assert "SHOWING_RESULTS: 0-100" in header
+        assert "RESULTS: 0 of 10 (offset=100, limit=20)" in header
 
+    def test_next_page_hint_is_off_by_default(self):
+        """The offset is already in the header; the worked call is opt-in."""
+        header = build_pagination_header("q", total_count=50, limit=10, offset=0)
+        assert not any("NEXT_PAGE:" in line for line in header)
 
-# === Tests for build_pagination_summary ===
-
-
-class TestBuildPaginationSummary:
-    """Tests for build_pagination_summary function."""
-
-    def test_multi_page_first(self):
-        """Should build summary for first page of multi-page results."""
-        summary = build_pagination_summary(total_count=50, limit=10, offset=0)
-        assert "PAGINATION_SUMMARY:" in summary
-        assert any("showing_page: 1 of 5" in line for line in summary)
-        assert any("showing_results: 1-10 of 50" in line for line in summary)
-        assert any("results_per_page: 10" in line for line in summary)
-        assert any("next_page_offset: 10" in line for line in summary)
-        # No prev_page on first page
-        assert not any("prev_page_offset" in line for line in summary)
-
-    def test_multi_page_middle(self):
-        """Should build summary for middle page with both prev and next."""
-        summary = build_pagination_summary(total_count=100, limit=20, offset=40)
-        assert any("showing_page: 3 of 5" in line for line in summary)
-        assert any("next_page_offset: 60" in line for line in summary)
-        assert any("prev_page_offset: 20" in line for line in summary)
-
-    def test_multi_page_last(self):
-        """Should build summary for last page without next."""
-        summary = build_pagination_summary(total_count=25, limit=10, offset=20)
-        assert any("showing_page: 3 of 3" in line for line in summary)
-        assert not any("next_page_offset" in line for line in summary)
-        assert any("prev_page_offset: 10" in line for line in summary)
-
-    def test_single_page_returns_empty(self):
-        """Should return empty list for single page results."""
-        summary = build_pagination_summary(total_count=5, limit=10, offset=0)
-        assert summary == []
+    def test_states_the_window_once(self):
+        """The whole point: no second restatement of the same numbers."""
+        header = build_pagination_header("q", total_count=50, limit=10, offset=0)
+        assert sum(1 for line in header if line.startswith("RESULTS:")) == 1
+        assert not any("PAGINATION_SUMMARY" in line for line in header)
 
 
 # === Tests for format_find_in_note_summary ===
@@ -433,8 +455,31 @@ class TestFormatNoteMetadataLines:
         assert "CREATED: 2024-01-15 10:30:00" in lines
         assert "UPDATED: 2024-01-16 14:20:00" in lines
 
+    def test_deleted_line_included_when_present(self):
+        """Should include DELETED line for trashed notes (upper and lower style)."""
+        metadata = {
+            "note_id": "trash123",
+            "title": "Trashed Note",
+            "deleted": "2024-02-01 09:00:00",
+        }
+        lines_upper = format_note_metadata_lines(metadata)
+        assert "DELETED: 2024-02-01 09:00:00" in lines_upper
+
+        lines_lower = format_note_metadata_lines(metadata, style="lower")
+        assert "deleted: 2024-02-01 09:00:00" in lines_lower
+
+    def test_deleted_line_absent_for_live_notes(self):
+        """Should omit DELETED line when deleted key is not in metadata."""
+        metadata = {
+            "note_id": "live123",
+            "title": "Live Note",
+            "created": "2024-01-15 10:30:00",
+        }
+        lines = format_note_metadata_lines(metadata)
+        assert not any("DELETED" in line for line in lines)
+
     def test_content_stats_included(self):
-        """Should include content stats when provided."""
+        """Should render content stats as a single line."""
         metadata = {
             "note_id": "stats123",
             "content_stats": {
@@ -444,12 +489,10 @@ class TestFormatNoteMetadataLines:
             },
         }
         lines = format_note_metadata_lines(metadata)
-        assert "CONTENT_SIZE_CHARS: 1500" in lines
-        assert "CONTENT_SIZE_WORDS: 250" in lines
-        assert "CONTENT_SIZE_LINES: 45" in lines
+        assert "CONTENT_SIZE: 1500 chars, 250 words, 45 lines" in lines
 
     def test_content_stats_lower_style(self):
-        """Should format content stats with lowercase labels."""
+        """Should format content stats with a lowercase label."""
         metadata = {
             "note_id": "lower123",
             "content_stats": {
@@ -459,9 +502,13 @@ class TestFormatNoteMetadataLines:
             },
         }
         lines = format_note_metadata_lines(metadata, style="lower")
-        assert "content_size_chars: 500" in lines
-        assert "content_size_words: 80" in lines
-        assert "content_size_lines: 20" in lines
+        assert "content_size: 500 chars, 80 words, 20 lines" in lines
+
+    def test_content_stats_partial(self):
+        """Should render only the stats that are present."""
+        metadata = {"note_id": "partial123", "content_stats": {"characters": 42}}
+        lines = format_note_metadata_lines(metadata)
+        assert "CONTENT_SIZE: 42 chars" in lines
 
     def test_key_order_preserved(self):
         """Should output keys in defined order."""

@@ -28,12 +28,13 @@
     "import_from_file": true,
     "ping_joplin": true
   },
+  "notebook_allowlist": null,
   "content_exposure": {
     "search_results": "preview",
     "individual_notes": "full",
-    "listings": "none",
     "max_preview_length": 300,
     "smart_toc_threshold": 2000,
-    "enable_smart_toc": true
+    "enable_smart_toc": true,
+    "output_hints": false
   }
 } 

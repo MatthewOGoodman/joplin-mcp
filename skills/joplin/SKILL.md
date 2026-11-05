@@ -60,7 +60,7 @@ If you need to change a paragraph, fix a typo, or append a section: always use `
 | `note_id` | 32-char hex ID only |
 | `notebook_name` | Human-readable name (e.g., "Work") |
 | `tag_name` | Human-readable name (e.g., "important") |
-| `parent_id` | 32-char hex ID of parent notebook |
+| `parent_name` | Notebook name or path (e.g., "Projects/Work"); omit for top-level, `"/"` to move to top-level |
 
 Search results return IDs — use those IDs in subsequent calls.
 
@@ -84,8 +84,8 @@ edit_note(id, old_string="...", new_string="...")  # surgical edit
 ### Create a sub-notebook with notes
 
 ```
-list_notebooks()                      # find parent notebook ID
-create_notebook("Sub", parent_id="<parent_hex_id>")
+create_notebook("Sub")              # top-level notebook: omit parent_name
+create_notebook("Sub", parent_name="Projects/Work")  # under an existing notebook (by name or path)
 create_note("Title", notebook_name="Sub", body="...")
 ```
 
