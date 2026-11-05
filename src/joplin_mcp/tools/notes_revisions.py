@@ -12,15 +12,21 @@ from joplin_mcp.fastmcp_server import (
     create_tool,
     format_creation_success,
     get_joplin_client,
-    get_notebook_id_by_name,
     validate_joplin_id,
 )
 from joplin_mcp.formatting import ItemType
+from joplin_mcp.config import get_config
+from joplin_mcp.notebook_utils import (
+    get_notebook_id_by_name,
+    notebook_resolver,
+    validate_notebook_access,
+)
 from joplin_mcp.revision_utils import (
     _apply_diff,
     _reconstruct_revision_content,
     save_note_revision,
 )
+from joplin_mcp.tools.field_helpers import validate_notebook_access_for_note
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,7 @@ async def get_note_history(
     """
     note_id = validate_joplin_id(note_id)
     client = get_joplin_client()
+    validate_notebook_access_for_note(client, note_id)
 
     # Get all revisions and filter to this note
     all_revs = client.get_all_revisions(
@@ -158,6 +165,18 @@ async def restore_note_revision(
     body = content["body"] or ""
     metadata = content["metadata"]
 
+    # Allowlist: the revision's original notebook must be accessible, or a
+    # restore would copy content out of a denied notebook into a new note.
+    cfg = get_config()
+    allowlist = cfg.notebook_allowlist if cfg.has_notebook_allowlist else None
+    if allowlist is not None:
+        if not metadata.get("parent_id"):
+            raise ValueError(
+                "Cannot verify this revision's original notebook against the "
+                "notebook allowlist; refusing to restore it."
+            )
+        validate_notebook_access(metadata["parent_id"], allowlist_entries=allowlist)
+
     # Determine target notebook
     target_notebook_id = None
     if target_notebook:
@@ -178,13 +197,27 @@ async def restore_note_revision(
         except Exception:
             target_notebook_id = None
 
-    # Fall back to "Restored Notes" notebook (create if needed)
+    # Fall back to "Restored Notes" notebook (create if needed). Under an
+    # allowlist a missing "Restored Notes" may only be hidden, and creating one
+    # at the top level would land outside the allowlist, so the caller must
+    # name an accessible target instead.
     if not target_notebook_id:
         try:
             target_notebook_id = get_notebook_id_by_name("Restored Notes")
         except ValueError:
-            nb = client.add_notebook(title="Restored Notes")
+            if allowlist is not None:
+                raise ValueError(
+                    "The original notebook is unavailable and no accessible "
+                    "'Restored Notes' notebook exists; pass target_notebook."
+                )
+            # Created through the resolver so its notebook cache sees the new
+            # notebook; a direct client call would leave the cache stale and a
+            # second restore inside the cache TTL would create a duplicate.
+            nb = notebook_resolver.add_notebook(title="Restored Notes")
             target_notebook_id = str(nb)
+
+    if allowlist is not None:
+        validate_notebook_access(target_notebook_id, allowlist_entries=allowlist)
 
     # Create the restored note
     note_id = str(
@@ -229,6 +262,7 @@ async def manually_backup_note(
     """
     note_id = validate_joplin_id(note_id)
     client = get_joplin_client()
+    validate_notebook_access_for_note(client, note_id)
 
     rev_id = save_note_revision(client, note_id)
     if rev_id:

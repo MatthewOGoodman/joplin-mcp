@@ -1,21 +1,21 @@
 """Bulk tag operation tools for Joplin MCP."""
 
 import logging
-from typing import Annotated, List
+from typing import Annotated, List, Tuple, Union
 
 from pydantic import Field
 
 from joplin_mcp.fastmcp_server import (
-    COMMON_NOTE_FIELDS,
     JoplinIdType,
+    _sanitise_error,
     create_tool,
     get_joplin_client,
-    get_tag_id_by_name,
     process_search_results,
     validate_joplin_id,
 )
-from joplin_mcp.formatting import ItemType
-from joplin_mcp.tools.tags import _tag_note_impl, _untag_note_impl
+from joplin_mcp.notebook_utils import AllowlistDeniedError
+from joplin_mcp.tools.field_helpers import validate_notebook_access_for_note
+from joplin_mcp.tools.tags import _format_tag_op_report, tag_note
 
 logger = logging.getLogger(__name__)
 
@@ -26,102 +26,63 @@ logger = logging.getLogger(__name__)
 @create_tool("strip_note_tags", "Remove all tags from note")
 async def strip_note_tags(
     note_id: Annotated[
-        JoplinIdType,
-        Field(description="Note ID to remove all tags from"),
+        Union[JoplinIdType, List[JoplinIdType]],
+        Field(description="Note ID, or list of note IDs, to remove all tags from"),
     ],
 ) -> str:
-    """Remove all tags from a specific note.
+    """Remove every tag from one or more notes.
 
-    Removes all existing tags from a note, effectively clearing its tag
-    associations. Useful for resetting a note's categorisation or cleaning
-    up over-tagged notes.
+    note_id accepts a single ID or a list, as untag_note does. Unlike
+    untag_note, no tag names are given: each note loses whatever tags it has.
 
-    Returns:
-        str: Success message with details of the tag removal operation.
+    Output: aggregated STRIP_NOTE_TAGS report in untag_note's format, one row
+    per (note, tag) pair removed, with TOTAL_OPS / SUCCEEDED / FAILED. A note
+    with no tags contributes no rows. Per-note failures (a missing note, or an
+    allowlist denial) are captured in the report; other notes still run.
 
     Examples:
-        - strip_note_tags("a1b2c3d4e5f6...") - Remove all tags from specific note
-        - strip_note_tags("note_id_123") - Clear all tags from the note
-
-    Note: The note must exist (by ID). If the note has no tags, the operation
-    succeeds with no changes.
+        - strip_note_tags("a1b2c3d4e5f6...") - Remove all tags from one note
+        - strip_note_tags(["a1b2...", "c3d4..."]) - Clear tags from two notes
     """
-    note_id = validate_joplin_id(note_id)
+    note_ids = [note_id] if isinstance(note_id, str) else list(note_id)
+    if not note_ids:
+        raise ValueError("note_id list must not be empty")
+    note_ids = [validate_joplin_id(nid) for nid in note_ids]
+
     client = get_joplin_client()
+    results: List[Tuple[str, str, bool, str]] = []
+    notes_cleared = 0
 
-    # Verify note exists and get info (following alondmnt's pattern)
-    try:
-        note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
-        note_title = getattr(note, "title", "Unknown Note")
-    except Exception:
-        raise ValueError(
-            f"Note with ID '{note_id}' not found. "
-            f"Use find_notes to find available notes."
-        )
-
-    # Get all tags currently on this note
-    try:
-        fields_list = "id,title,created_time,updated_time"
-        tags_result = client.get_tags(note_id=note_id, fields=fields_list)
-        note_tags = process_search_results(tags_result)
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to retrieve tags for note '{note_title}': {e}"
-        )
-
-    if not note_tags:
-        return (
-            f"OPERATION: STRIP_TAGS\n"
-            f"STATUS: SUCCESS\n"
-            f"NOTE_ID: {note_id}\n"
-            f"NOTE_TITLE: {note_title}\n"
-            f"TAGS_REMOVED: 0\n"
-            f"MESSAGE: Note already has no tags"
-        )
-
-    # Remove each tag from the note
-    successful_removals = []
-    failed_removals = []
-
-    for tag in note_tags:
-        tag_id = getattr(tag, "id", "")
-        tag_name = getattr(tag, "title", "Unknown Tag")
+    for nid in note_ids:
         try:
-            client.delete(f"/tags/{tag_id}/notes/{note_id}")
-            successful_removals.append(tag_name)
+            validate_notebook_access_for_note(client, nid)
+            tags = process_search_results(
+                client.get_tags(note_id=nid, fields="id,title")
+            )
+        except AllowlistDeniedError as e:
+            results.append((nid, "(all tags)", False, str(e)))
+            continue
         except Exception as e:
-            failed_removals.append(f"'{tag_name}': {e}")
+            results.append((nid, "(all tags)", False, _sanitise_error(str(e))))
+            continue
 
-    success_count = len(successful_removals)
-    total_count = len(note_tags)
+        notes_cleared += 1
+        for tag in tags:
+            tag_name = getattr(tag, "title", "Unknown Tag")
+            try:
+                client.delete(f"/tags/{getattr(tag, 'id', '')}/notes/{nid}")
+                results.append((nid, tag_name, True, ""))
+            except Exception as e:
+                results.append((nid, tag_name, False, _sanitise_error(str(e))))
 
-    if failed_removals:
-        result_lines = [
-            "OPERATION: STRIP_TAGS",
-            "STATUS: PARTIAL_SUCCESS",
-            f"NOTE_ID: {note_id}",
-            f"NOTE_TITLE: {note_title}",
-            f"TAGS_REMOVED: {success_count}/{total_count}",
-            f"REMOVED: {', '.join(successful_removals)}",
-            f"FAILED: {', '.join(failed_removals)}",
-        ]
-    else:
-        result_lines = [
-            "OPERATION: STRIP_TAGS",
-            "STATUS: SUCCESS",
-            f"NOTE_ID: {note_id}",
-            f"NOTE_TITLE: {note_title}",
-            f"TAGS_REMOVED: {success_count}",
-            f"REMOVED: {', '.join(successful_removals)}",
-        ]
-
-    return "\n".join(result_lines)
+    report = _format_tag_op_report("STRIP_NOTE_TAGS", results)
+    return f"{report}\nNOTES_PROCESSED: {notes_cleared} of {len(note_ids)}"
 
 
 @create_tool("bulk_tag_notes", "Bulk tag notes")
 async def bulk_tag_notes(
     note_ids: Annotated[
-        List[str],
+        List[JoplinIdType],
         Field(description="List of note IDs to add tags to"),
     ],
     tag_names: Annotated[
@@ -131,109 +92,12 @@ async def bulk_tag_notes(
 ) -> str:
     """Apply multiple tags to multiple notes in a single bulk operation.
 
-    Adds all specified tags to all specified notes (cartesian product). Each
-    tag will be applied to each note, creating comprehensive tagging across
-    multiple items.
-
-    Returns:
-        str: Detailed success message with operation statistics.
+    Alias of tag_note(note_id=note_ids, tag_name=tag_names): every tag is
+    applied to every note, with tag_note's report, allowlist checks and
+    missing-tag handling (tags must already exist; use create_tag first).
 
     Examples:
         - bulk_tag_notes(["note1", "note2"], ["Important", "Work"])
         - bulk_tag_notes(["abc123", "def456", "ghi789"], ["Project-Alpha"])
-
-    Note: All notes must exist (by ID) and all tags must exist (by name).
-    Creates note-tag relationships for all combinations.
     """
-    if not note_ids:
-        raise ValueError("At least one note ID must be provided")
-    if not tag_names:
-        raise ValueError("At least one tag name must be provided")
-
-    # Validate all note IDs
-    validated_note_ids = [validate_joplin_id(nid) for nid in note_ids]
-
-    client = get_joplin_client()
-
-    # Verify all notes exist and collect titles (following alondmnt's pattern)
-    note_titles = {}
-    for nid in validated_note_ids:
-        try:
-            note = client.get_note(nid, fields=COMMON_NOTE_FIELDS)
-            note_titles[nid] = getattr(note, "title", "Unknown Note")
-        except Exception:
-            raise ValueError(
-                f"Note with ID '{nid}' not found. "
-                f"Use find_notes to find available notes."
-            )
-
-    # Apply all tags to all notes (cartesian product)
-    successful_operations = []
-    failed_operations = []
-    total_operations = len(validated_note_ids) * len(tag_names)
-
-    for nid in validated_note_ids:
-        note_title = note_titles[nid]
-        for tag_name in tag_names:
-            try:
-                tag_id = get_tag_id_by_name(tag_name)
-                client.add_tag_to_note(tag_id, nid)
-                successful_operations.append(
-                    f"'{tag_name}' -> '{note_title}' ({nid[:8]}...)"
-                )
-            except Exception as e:
-                failed_operations.append(
-                    f"'{tag_name}' -> '{note_title}' ({nid[:8]}...): {e}"
-                )
-
-    success_count = len(successful_operations)
-    failure_count = len(failed_operations)
-
-    if failure_count == 0:
-        status = "SUCCESS"
-    elif success_count > 0:
-        status = "PARTIAL_SUCCESS"
-    else:
-        status = "FAILED"
-
-    result_parts = [
-        "OPERATION: BULK_TAG_NOTES",
-        f"STATUS: {status}",
-        f"NOTES_PROCESSED: {len(validated_note_ids)}",
-        f"TAGS_APPLIED: {len(tag_names)}",
-        f"TOTAL_OPERATIONS: {total_operations}",
-        f"SUCCESSFUL: {success_count}",
-        f"FAILED: {failure_count}",
-        "",
-    ]
-
-    if successful_operations:
-        result_parts.append("SUCCESSFUL_TAGS:")
-        for op in successful_operations:
-            result_parts.append(f"  {op}")
-        result_parts.append("")
-
-    if failed_operations:
-        result_parts.append("FAILED_TAGS:")
-        for op in failed_operations:
-            result_parts.append(f"  {op}")
-        result_parts.append("")
-
-    # Summary message
-    if failure_count == 0:
-        result_parts.append(
-            f"MESSAGE: Successfully applied {len(tag_names)} tag(s) to "
-            f"{len(validated_note_ids)} note(s) ({success_count} total operations)"
-        )
-    elif success_count > 0:
-        result_parts.append(
-            f"MESSAGE: Partially completed bulk tagging: "
-            f"{success_count} successful, {failure_count} failed"
-        )
-    else:
-        result_parts.append(
-            f"MESSAGE: Bulk tagging failed: "
-            f"all {total_operations} operations failed"
-        )
-
-    return "\n".join(result_parts)
+    return await tag_note.fn(note_id=list(note_ids), tag_name=list(tag_names))

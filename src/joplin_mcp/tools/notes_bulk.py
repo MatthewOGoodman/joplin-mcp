@@ -1,6 +1,6 @@
 """Bulk note operation tools for Joplin MCP."""
 
-from typing import Annotated, List, Optional, Union
+from typing import Annotated, List, Optional, Tuple, Union
 
 from pydantic import Field
 
@@ -8,26 +8,98 @@ from joplin_mcp.fastmcp_server import (
     ItemType,
     JoplinIdType,
     OptionalBoolType,
-    apply_pagination,
+    _sanitise_error,
     create_tool,
     flexible_bool_converter,
-    format_search_results_with_pagination,
     format_update_success,
     get_joplin_client,
     validate_joplin_id,
 )
-from joplin_mcp.notebook_utils import get_notebook_id_by_name
+from joplin_mcp import note_view
+from joplin_mcp.config import get_config
+from joplin_mcp.note_view import format_search_results_with_pagination
+from joplin_mcp.notebook_utils import get_notebook_id_by_name, validate_notebook_access
 from joplin_mcp.revision_utils import save_note_revision
 from joplin_mcp.tools.backup_database import backup_joplin_database
 from joplin_mcp.tools.field_helpers import (
     JOPLIN_NOTE_FIELDS,
     _search_notes,
     _parse_update_params,
-    extract_note_ids_from_result,
+    validate_notebook_access_for_note,
 )
+from joplin_mcp.tools.notes import update_note
 
 
 # === BULK NOTE TOOLS ===
+
+
+def _resolve_target_notebook(
+    notebook_name: Optional[str], target_notebook_id: Optional[str]
+) -> str:
+    """Resolve exactly one of a notebook name/path or a notebook ID to an ID."""
+    if notebook_name is None and target_notebook_id is None:
+        raise ValueError(
+            "Must specify either notebook_name (name or path) or target_notebook_id (ID)"
+        )
+    if notebook_name is not None and target_notebook_id is not None:
+        raise ValueError(
+            "Cannot specify both notebook_name and target_notebook_id. Use one or the other."
+        )
+    if notebook_name is not None:
+        return get_notebook_id_by_name(notebook_name)
+    return validate_joplin_id(target_notebook_id)
+
+
+def _move_notes(
+    client, note_ids: List[str], target_notebook_id: str
+) -> List[Tuple[str, bool, str]]:
+    """Move each note into ``target_notebook_id``; one (note_id, ok, error) row per note.
+
+    Enforces the notebook allowlist as update_note does: the destination is
+    checked once up front (a denial raises before anything moves), and each
+    note's source notebook per note (a denial is a failed row; the rest still
+    run). Writes go through note_view so the note cache stays coherent.
+    """
+    cfg = get_config()
+    if cfg.has_notebook_allowlist:
+        validate_notebook_access(
+            target_notebook_id, allowlist_entries=cfg.notebook_allowlist
+        )
+
+    results: List[Tuple[str, bool, str]] = []
+    for nid in note_ids:
+        try:
+            validate_notebook_access_for_note(client, nid)
+            note_view.modify_note(client, nid, parent_id=target_notebook_id)
+            results.append((nid, True, ""))
+        except Exception as e:
+            results.append((nid, False, _sanitise_error(str(e))))
+    return results
+
+
+def _format_move_report(
+    results: List[Tuple[str, bool, str]], target_notebook_id: str
+) -> str:
+    """Aggregated BULK_MOVE_NOTES report, field-for-field parallel to tag_note's."""
+    total = len(results)
+    succeeded = sum(1 for _, ok, _ in results if ok)
+    failed = total - succeeded
+    lines = [
+        "OPERATION: BULK_MOVE_NOTES",
+        f"STATUS: {'SUCCESS' if failed == 0 else 'PARTIAL'}",
+        f"TOTAL_OPS: {total}",
+        f"SUCCEEDED: {succeeded}",
+        f"FAILED: {failed}",
+        f"TARGET_NOTEBOOK_ID: {target_notebook_id}",
+        f"MESSAGE: {succeeded} of {total} operations succeeded",
+    ]
+    if failed:
+        lines.append("FAILURES:")
+        for nid, ok, err in results:
+            if not ok:
+                clean_err = " ".join(err.split()).replace('"', "'")
+                lines.append(f'  - note_id={nid} error="{clean_err}"')
+    return "\n".join(lines)
 
 
 @create_tool("move_note", "Move note")
@@ -35,7 +107,7 @@ async def move_note(
     note_id: Annotated[JoplinIdType, Field(description="Note ID to move")],
     target_notebook: Annotated[
         Optional[str],
-        Field(description="Target notebook name to move note to"),
+        Field(description="Target notebook name or path (e.g. 'Archive' or 'Projects/Work')"),
     ] = None,
     target_notebook_id: Annotated[
         Optional[str],
@@ -44,118 +116,80 @@ async def move_note(
 ) -> str:
     """Move a single note to a different notebook.
 
-    Changes the parent notebook of a note by updating its parent_id field.
-    Specify either target_notebook (name) OR target_notebook_id (ID) - one is required.
+    Alias of update_note(note_id, notebook_name=...) when given a notebook name
+    or path. Specify either target_notebook (name/path) OR target_notebook_id
+    (ID) - one is required. update_note takes no notebook ID, so the ID form
+    moves through the same path as bulk_move_notes.
 
     Returns:
         str: Success message confirming the note was moved.
 
     Examples:
         - move_note("note123", target_notebook="Archive") - Move note to Archive notebook
+        - move_note("note123", target_notebook="Projects/Work") - Move by notebook path
         - move_note("note123", target_notebook_id="abc123def456") - Move using notebook ID
     """
     note_id = validate_joplin_id(note_id)
+    if target_notebook is not None and target_notebook_id is None:
+        return await update_note.fn(note_id=note_id, notebook_name=target_notebook)
 
-    if target_notebook is None and target_notebook_id is None:
-        raise ValueError(
-            "Must specify either target_notebook (name) or target_notebook_id (ID)"
-        )
-    if target_notebook is not None and target_notebook_id is not None:
-        raise ValueError(
-            "Cannot specify both target_notebook and target_notebook_id. Use one or the other."
-        )
-
-    if target_notebook is not None:
-        target_notebook_id = get_notebook_id_by_name(target_notebook)
-
-    target_notebook_id = validate_joplin_id(target_notebook_id)
-
-    client = get_joplin_client()
-    try:
-        client.modify_note(note_id, parent_id=target_notebook_id)
-        result = format_update_success(ItemType.note, note_id)
-        return f"{result}\nMOVED_TO_NOTEBOOK_ID: {target_notebook_id}"
-    except Exception as e:
-        raise RuntimeError(f"Failed to move note: {e}")
+    notebook_id = _resolve_target_notebook(target_notebook, target_notebook_id)
+    (_, ok, err), = _move_notes(get_joplin_client(), [note_id], notebook_id)
+    if not ok:
+        raise ValueError(err)
+    return format_update_success(ItemType.note, note_id)
 
 
 @create_tool("bulk_move_notes", "Bulk move notes")
 async def bulk_move_notes(
-    note_ids: Annotated[
-        List[str], Field(description="List of note IDs to move")
+    note_id: Annotated[
+        Union[JoplinIdType, List[JoplinIdType]],
+        Field(description="Note ID, or list of note IDs"),
     ],
-    target_notebook: Annotated[
+    notebook_name: Annotated[
         Optional[str],
-        Field(description="Target notebook name to move notes to"),
+        Field(description="Target notebook by name or path (e.g. 'Work' or 'Projects/Work/Tasks')"),
     ] = None,
     target_notebook_id: Annotated[
         Optional[str],
-        Field(description="Target notebook ID (alternative to notebook name)"),
+        Field(description="Target notebook ID (alternative to notebook_name)"),
     ] = None,
     backup: Annotated[
         Optional[str],
         Field(description="Database backup before operation: 'daily' (default, once per day), 'force' (always), 'suppress' (skip). WARNING: Never set to 'suppress' unless the user explicitly requests it."),
     ] = "daily",
 ) -> str:
-    """Move multiple notes to a target notebook in a single operation.
+    """Move one or more notes to a target notebook in one call.
 
-    Efficiently moves multiple notes between notebooks by updating their parent_id field.
-    Specify either target_notebook (name) OR target_notebook_id (ID) - one is required.
+    note_id accepts a single ID or a list, as tag_note does. Specify either
+    notebook_name (name or path, resolved like update_note's) OR
+    target_notebook_id - one is required. Backs up the database first unless
+    told not to.
 
-    Returns:
-        str: Summary with success/failure counts.
+    Output: aggregated BULK_MOVE_NOTES report with TOTAL_OPS / SUCCEEDED /
+    FAILED. Per-note failures (e.g. a missing note, or an allowlist denial of
+    the note's current notebook) are captured in the report; other moves still
+    run. A denied destination stops the call before anything moves.
 
     Examples:
-        - bulk_move_notes(["note1", "note2", "note3"], target_notebook="Archive")
+        - bulk_move_notes(["note1", "note2", "note3"], notebook_name="Archive")
+        - bulk_move_notes("note1", notebook_name="Projects/Work/Tasks")
         - bulk_move_notes(["note1", "note2"], target_notebook_id="abc123def456")
     """
-    if target_notebook is None and target_notebook_id is None:
-        raise ValueError(
-            "Must specify either target_notebook (name) or target_notebook_id (ID)"
-        )
-    if target_notebook is not None and target_notebook_id is not None:
-        raise ValueError(
-            "Cannot specify both target_notebook and target_notebook_id. Use one or the other."
-        )
+    note_ids = [note_id] if isinstance(note_id, str) else list(note_id)
+    if not note_ids:
+        raise ValueError("note_id list must not be empty")
+    note_ids = [validate_joplin_id(nid) for nid in note_ids]
 
-    if target_notebook is not None:
-        target_notebook_id = get_notebook_id_by_name(target_notebook)
-
-    target_notebook_id = validate_joplin_id(target_notebook_id)
-
-    validated_note_ids = [validate_joplin_id(nid) for nid in note_ids]
-    if not validated_note_ids:
-        raise ValueError("At least one note ID must be provided")
+    notebook_id = _resolve_target_notebook(notebook_name, target_notebook_id)
 
     client = get_joplin_client()
 
-    # Backup database before bulk operation
     if backup != "suppress":
         backup_joplin_database(force=(backup == "force"))
 
-    success_count = 0
-    failed_moves: List[str] = []
-
-    for nid in validated_note_ids:
-        try:
-            client.modify_note(nid, parent_id=target_notebook_id)
-            success_count += 1
-        except Exception as e:
-            failed_moves.append(f"Note {nid}: {e}")
-
-    result_lines = [
-        "operation: bulk_move_notes",
-        f"status: {'partial_success' if failed_moves else 'success'}",
-        f"total_notes: {len(validated_note_ids)}",
-        f"moved_successfully: {success_count}",
-        f"target_notebook_id: {target_notebook_id}",
-    ]
-
-    if failed_moves:
-        result_lines.append(f"failed_moves: {len(failed_moves)}")
-        result_lines.extend([f"  - {error}" for error in failed_moves])
-
-    return "\n".join(result_lines)
+    results = _move_notes(client, note_ids, notebook_id)
+    return _format_move_report(results, notebook_id)
 
 
 @create_tool(
@@ -371,11 +405,18 @@ async def search_and_bulk_update_preview(
         user_updated_time_filter=user_updated_time_filter,
     )
 
+    # Allowlist: a move destination must itself be accessible. Notes in denied
+    # notebooks are already excluded from the match set by _search_notes.
+    if "parent_id" in updates and get_config().has_notebook_allowlist:
+        validate_notebook_access(
+            updates["parent_id"], allowlist_entries=get_config().notebook_allowlist
+        )
+
     client = get_joplin_client()
     try:
         all_notes, skipped_by_filter = _search_notes(client, query, **filters)
         total_found = len(all_notes) + skipped_by_filter
-        paginated_notes, _ = apply_pagination(all_notes, preview_limit, 0)
+        paginated_notes = all_notes[:preview_limit]
         if not paginated_notes:
             return f"No notes found matching query: {query}"
 
@@ -383,6 +424,7 @@ async def search_and_bulk_update_preview(
         preview_result = format_search_results_with_pagination(
             search_description, paginated_notes, len(all_notes),
             preview_limit, 0, "search_results", original_query=query,
+            config=get_config(),
         )
 
         filter_info = ""
@@ -395,7 +437,7 @@ async def search_and_bulk_update_preview(
                 f"Active filters: {', '.join(f'{k}={v}' for k, v in filters.items())}\n"
             )
 
-        note_ids = extract_note_ids_from_result(preview_result, inspect_count)
+        note_ids = [getattr(n, "id") for n in paginated_notes[:inspect_count]]
         content_parts = []
         for nid in note_ids:
             try:
@@ -629,6 +671,13 @@ async def search_and_bulk_update_execute(
     if not updates:
         raise ValueError("At least one update field must be provided")
 
+    # Allowlist: a move destination must itself be accessible. Notes in denied
+    # notebooks are already excluded from the match set by _search_notes.
+    if "parent_id" in updates and get_config().has_notebook_allowlist:
+        validate_notebook_access(
+            updates["parent_id"], allowlist_entries=get_config().notebook_allowlist
+        )
+
     if backup != "suppress":
         backup_joplin_database(force=(backup == "force"))
 
@@ -657,7 +706,7 @@ async def search_and_bulk_update_execute(
         try:
             if "body" in update_payload or "title" in update_payload:
                 save_note_revision(client, note_id)
-            client.modify_note(note_id, **update_payload)
+            note_view.modify_note(client, note_id, **update_payload)
             success_count += 1
         except Exception as e:
             note_title = getattr(note, "title", "Unknown")

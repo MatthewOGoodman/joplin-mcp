@@ -186,8 +186,11 @@ class TestUpdateNoteTool:
         assert "TITLE: New Title" in result
 
     @pytest.mark.asyncio
+    # The fork's pre-write revision backup reads the note itself; it is
+    # stubbed so this test still pins that update_note does not fetch it.
+    @patch("joplin_mcp.tools.notes.save_note_revision")
     @patch("joplin_mcp.tools.notes.get_joplin_client")
-    async def test_omits_title_when_only_body_changes(self, mock_get_client):
+    async def test_omits_title_when_only_body_changes(self, mock_get_client, _mock_backup):
         """A body-only update never learns the title, so it must not claim one."""
         from joplin_mcp.tools.notes import update_note
 

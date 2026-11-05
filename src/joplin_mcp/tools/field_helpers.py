@@ -6,11 +6,10 @@ Provides:
 - convert_todo_completed: Timestamp converter for todo_completed values
 - _search_notes: Single entry point for searching + filtering notes
 - _parse_update_params: Separates update values from filter conditions
-- extract_note_ids_from_result: Parses note IDs from formatted output
+- validate_notebook_access_for_note: Allowlist check on the notebook holding a note
 """
 
 import datetime
-import re
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -20,6 +19,8 @@ from joplin_mcp.fastmcp_server import (
     process_search_results,
     timestamp_converter,
 )
+from joplin_mcp.config import get_config
+from joplin_mcp.notebook_utils import is_notebook_accessible, validate_notebook_access
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +195,19 @@ def _search_notes(
         results = client.search_all(query=query, fields=ALL_NOTE_FIELDS)
         notes = process_search_results(results)
 
+    # Allowlist: notes in denied notebooks are invisible to both the preview and
+    # the execute pass, so the two count the same set. Applied before the
+    # field filters so a denied note is never counted as "skipped" either.
+    cfg = get_config()
+    if cfg.has_notebook_allowlist:
+        notes = [
+            n for n in notes
+            if is_notebook_accessible(
+                getattr(n, "parent_id", ""),
+                allowlist_entries=cfg.notebook_allowlist,
+            )
+        ]
+
     # Phase 2: Python field-value filtering (AND logic)
     if not filters:
         return notes, 0
@@ -255,24 +269,17 @@ def _parse_update_params(**kwargs: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]
 # ---------------------------------------------------------------------------
 
 
-def extract_note_ids_from_result(formatted_result: str, limit: int) -> List[str]:
-    """Extract note IDs from formatted search results.
+def validate_notebook_access_for_note(client: Any, note_id: str) -> None:
+    """Raise AllowlistDeniedError unless the notebook holding ``note_id`` is accessible.
 
-    Parses output looking for lines matching ``note_id: <32-hex-chars>``.
-
-    Args:
-        formatted_result: Formatted string output from find_notes/preview.
-        limit: Maximum number of note IDs to extract.
-
-    Returns:
-        List of note IDs (up to *limit*).
+    Differs from ``notebook_utils.validate_notebook_access`` in taking a NOTE id:
+    it fetches the note's ``parent_id`` first. A no-op when no allowlist is
+    configured, so it costs no request in the common case.
     """
-    note_ids: List[str] = []
-    pattern = r"^\s*note_id:\s*([a-f0-9]{32})"
-
-    for line in formatted_result.split("\n"):
-        match = re.match(pattern, line)
-        if match and len(note_ids) < limit:
-            note_ids.append(match.group(1))
-
-    return note_ids
+    cfg = get_config()
+    if not cfg.has_notebook_allowlist:
+        return
+    note = client.get_note(note_id, fields="id,parent_id")
+    validate_notebook_access(
+        getattr(note, "parent_id", ""), allowlist_entries=cfg.notebook_allowlist
+    )

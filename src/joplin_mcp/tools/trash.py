@@ -18,9 +18,55 @@ from joplin_mcp.fastmcp_server import (
     get_joplin_client,
     validate_joplin_id,
 )
-from joplin_mcp.notebook_utils import notebook_resolver
+from joplin_mcp.config import get_config
+from joplin_mcp.notebook_utils import is_notebook_accessible, notebook_resolver
+from joplin_mcp.tools.notes import find_notes
 
 logger = logging.getLogger(__name__)
+
+
+def _format_trashed_notebooks(client, limit: int, offset: int) -> str:
+    """List trashed notebooks, most recently deleted first.
+
+    Upstream's find_notes(trash=True) lists notes only, so the notebook half of
+    list_trash stays fork code. Under a notebook allowlist only notebooks the
+    resolver confirms accessible are shown.
+    """
+    epoch_zero = dt_module.datetime(1970, 1, 1, 0, 0)
+    notebooks = client.get_all_notebooks(
+        fields="id,title,deleted_time,parent_id", include_deleted=1
+    )
+    trashed = [
+        nb for nb in notebooks
+        if getattr(nb, "deleted_time", None) and nb.deleted_time != epoch_zero
+    ]
+    cfg = get_config()
+    if cfg.has_notebook_allowlist:
+        trashed = [
+            nb for nb in trashed
+            if is_notebook_accessible(nb.id, allowlist_entries=cfg.notebook_allowlist)
+        ]
+    trashed.sort(key=lambda nb: nb.deleted_time, reverse=True)
+
+    total = len(trashed)
+    page = trashed[offset : offset + limit]
+    if not page:
+        return f"TRASHED_NOTEBOOKS: {total}\nSTATUS: No trashed notebooks in this range"
+
+    titles = {getattr(nb, "id", ""): getattr(nb, "title", "Unknown") for nb in notebooks}
+    lines = [
+        f"TRASHED_NOTEBOOKS: {total}",
+        f"SHOWING: {offset + 1}-{offset + len(page)} of {total}",
+        "",
+    ]
+    for i, nb in enumerate(page, offset + 1):
+        parent = getattr(nb, "parent_id", "") or ""
+        lines.append(f"NOTEBOOK_{i}:")
+        lines.append(f"  id: {nb.id}")
+        lines.append(f"  title: {getattr(nb, 'title', 'Untitled')}")
+        lines.append(f"  deleted: {format_timestamp(nb.deleted_time)}")
+        lines.append(f"  original_parent: {titles.get(parent, '(top level)') if parent else '(top level)'}")
+    return "\n".join(lines)
 
 
 @create_tool("list_trash", "List trashed items")
@@ -35,115 +81,37 @@ async def list_trash(
         ),
     ] = None,
     limit: Annotated[
-        LimitType, Field(description="Max results (1-100, default: 20)")
+        LimitType, Field(description="Max results per item type (1-100, default: 20)")
     ] = 20,
     offset: Annotated[
         OffsetType,
-        Field(description="Skip count for pagination (default: 0)"),
+        Field(description="Skip count for pagination, per item type (default: 0)"),
     ] = 0,
 ) -> str:
     """List items in Joplin's trash.
 
-    Shows notes and/or notebooks that have been soft-deleted (moved to trash).
-    These items can be restored with restore_from_trash.
+    Notes are listed by find_notes("*", trash=True) - item_type='note' is an
+    alias of that call. Notebooks, which find_notes cannot list, follow in their
+    own section. With item_type=None both sections are returned, and limit and
+    offset apply to each section separately. Restore with restore_from_trash.
 
     Returns:
-        str: List of trashed items with title, ID, deletion date, and original
-             notebook.
+        str: Trashed notes (find_notes format) and/or trashed notebooks with ID,
+             deletion date, and original parent notebook.
     """
-    client = get_joplin_client()
-    epoch_zero = dt_module.datetime(1970, 1, 1, 0, 0)
-    results = []
-
-    if item_type is None or item_type == "note":
-        notes = client.get_all_notes(
-            fields="id,title,deleted_time,parent_id,is_todo",
-            include_deleted=1,
+    if item_type not in (None, "note", "notebook"):
+        raise ValueError(
+            f"item_type must be 'note', 'notebook' or None, got '{item_type}'"
         )
-        trashed_notes = [
-            n
-            for n in notes
-            if getattr(n, "deleted_time", None)
-            and n.deleted_time != epoch_zero
-        ]
-        for n in trashed_notes:
-            results.append(
-                {
-                    "type": "note",
-                    "id": n.id,
-                    "title": getattr(n, "title", "Untitled"),
-                    "deleted_time": n.deleted_time,
-                    "parent_id": getattr(n, "parent_id", ""),
-                    "is_todo": getattr(n, "is_todo", False),
-                }
-            )
 
-    if item_type is None or item_type == "notebook":
-        notebooks = client.get_all_notebooks(
-            fields="id,title,deleted_time,parent_id",
-            include_deleted=1,
+    sections = []
+    if item_type in (None, "note"):
+        sections.append(
+            await find_notes.fn(query="*", limit=limit, offset=offset, trash=True)
         )
-        trashed_notebooks = [
-            n
-            for n in notebooks
-            if getattr(n, "deleted_time", None)
-            and n.deleted_time != epoch_zero
-        ]
-        for n in trashed_notebooks:
-            results.append(
-                {
-                    "type": "notebook",
-                    "id": n.id,
-                    "title": getattr(n, "title", "Untitled"),
-                    "deleted_time": n.deleted_time,
-                    "parent_id": getattr(n, "parent_id", ""),
-                }
-            )
-
-    # Sort by deletion time, most recent first
-    results.sort(key=lambda x: x["deleted_time"], reverse=True)
-
-    total_count = len(results)
-
-    # Apply pagination
-    paginated = results[offset : offset + limit]
-
-    if not paginated:
-        return "TRASH_ITEMS: 0\nSTATUS: Trash is empty"
-
-    # Build notebook name lookup for parent_id display
-    try:
-        all_notebooks = client.get_all_notebooks(
-            fields="id,title", include_deleted=1
-        )
-        nb_map = {
-            getattr(nb, "id", ""): getattr(nb, "title", "Unknown")
-            for nb in all_notebooks
-        }
-    except Exception:
-        nb_map = {}
-
-    lines = [
-        f"TRASH_ITEMS: {total_count}",
-        f"SHOWING: {offset + 1}-{offset + len(paginated)} of {total_count}",
-        "",
-    ]
-
-    for i, item in enumerate(paginated, offset + 1):
-        deleted_str = format_timestamp(item["deleted_time"])
-        parent_name = nb_map.get(
-            item["parent_id"], item["parent_id"][:12] + "..."
-        )
-        lines.append(f"ITEM_{i}:")
-        lines.append(f"  type: {item['type']}")
-        lines.append(f"  id: {item['id']}")
-        lines.append(f"  title: {item['title']}")
-        lines.append(f"  deleted: {deleted_str}")
-        lines.append(f"  original_notebook: {parent_name}")
-        if item["type"] == "note" and item.get("is_todo"):
-            lines.append("  is_todo: true")
-
-    return "\n".join(lines)
+    if item_type in (None, "notebook"):
+        sections.append(_format_trashed_notebooks(get_joplin_client(), limit, offset))
+    return "\n\n".join(sections)
 
 
 @create_tool("restore_from_trash", "Restore item from trash")
