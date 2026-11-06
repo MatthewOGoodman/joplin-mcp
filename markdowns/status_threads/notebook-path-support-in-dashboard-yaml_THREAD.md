@@ -1,6 +1,9 @@
 # Notebook-path support in dashboard YAML
 
-Joplin REST search currently filters notebook by leaf name only; needs full-path matching in `JoplinRestLoader._build_query()` (`dashboard/loader.py:64-74`). Open cross-project blocker that job_search holds against joplin-mcp, tracked in `~/.claude/STATUS.md` under "Notebook-path support in dashboard YAML".
+Full-path notebook matching in the dashboard loader, to unblock job_search.
+- Joplin REST search currently filters notebook by leaf name only; the change lands in `JoplinRestLoader._build_query()` (`dashboard/loader.py:64-74`).
+- Open cross-project blocker that job_search holds against joplin-mcp, tracked in `~/.claude/STATUS.md` under "Notebook-path support in dashboard YAML".
+
 
 ## TODO
 

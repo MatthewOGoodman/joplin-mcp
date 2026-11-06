@@ -1,6 +1,11 @@
 # Direct SQLite read layer
 
-The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only SQLite layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes. Caveat: assumes the server shares a host with Joplin Desktop. Design considerations — including the rejected option of contributing filter params upstream to Joplin itself — in `markdowns/DESIGN_NOTES.md` → "Design: Direct SQLite read layer". First consumer in waiting: the dashboard's `Loader` interface (`dashboard/loader.py`) was built so a `JoplinSqliteLoader` can drop in — see CLAUDE.md Learnings → Design Decisions, "Dashboard reads over REST, not SQLite", for the triggers that would justify it.
+Read-only SQLite layer for filtered reads, keeping REST for writes.
+- The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes.
+- Caveat: assumes the server shares a host with Joplin Desktop.
+- Design considerations — including the rejected option of contributing filter params upstream to Joplin itself — in `markdowns/DESIGN_NOTES.md` → "Design: Direct SQLite read layer".
+- First consumer in waiting: the dashboard's `Loader` interface (`dashboard/loader.py`) was built so a `JoplinSqliteLoader` can drop in — see CLAUDE.md Learnings → Design Decisions, "Dashboard reads over REST, not SQLite", for the triggers that would justify it.
+
 
 ## TODO
 

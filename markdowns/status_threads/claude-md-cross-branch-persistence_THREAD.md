@@ -1,6 +1,9 @@
 # CLAUDE.md cross-branch persistence
 
-Superseded 2026-11-06: handed to claude-wrangler as the single owner — its Inbox item "Revive or retire the cross-branch context-file carry" carries this thread's unique TODOs (survey alternatives, shared-vs-branch split, carry the thread-file directory too). Drop this thread once that item is picked up.
+Superseded 2026-11-06 — handed to claude-wrangler as the single owner.
+- claude-wrangler's Inbox item "Revive or retire the cross-branch context-file carry" carries this thread's unique TODOs: survey alternatives, the shared-vs-branch split, and carrying the thread-file directory too.
+- Drop this thread once that item is picked up.
+
 
 ## TODO
 

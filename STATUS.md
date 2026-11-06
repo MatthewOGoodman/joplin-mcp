@@ -36,14 +36,14 @@ Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/
 
 ### Notebook-path support in dashboard YAML  [plan] (#)
 
-Joplin REST search currently filters notebook by leaf name only; needs full-path matching in `JoplinRestLoader._build_query()` (`dashboard/loader.py:64-74`). Open cross-project blocker that job_search holds against joplin-mcp, tracked in `~/.claude/STATUS.md` under "Notebook-path support in dashboard YAML".
+Full-path notebook matching in the dashboard loader, to unblock job_search.
 → markdowns/status_threads/notebook-path-support-in-dashboard-yaml_THREAD.md
 
 ## 3. Inactive Threads
 
 ### joplin-dashboard global discoverability  [queued]
 
-Wrapper at `bin/joplin-dashboard` + a `claude-wrangler-manifest.txt` entry so the CLI is on PATH from any non-conda shell. Design rationale — including the drafted wrapper script and the five rejected alternatives — in `markdowns/DESIGN_NOTES.md` → "Design: joplin-dashboard global discoverability". An interim hardcoded symlink is already in place from a job_search session; the installer will warn-and-skip on it unless run with `--force`.
+Put the joplin-dashboard and joplin-mdsync CLIs on PATH outside the conda env.
 → markdowns/status_threads/joplin-dashboard-global-discoverability_THREAD.md
 
 ### mdsync follow-ups  [queued]
@@ -53,7 +53,7 @@ Residual verification left over from the shipped mdsync subpackage (`bbacf38`). 
 
 ### Test suite hygiene  [queued]
 
-Four test failures predate current work and have been verified on a clean tree (via `git stash`) in two separate sessions without being tracked anywhere. Surfaced by the 2026-07-28 cleanup from the 2026-06-06 and 2026-06-09 session records, where both sessions independently confirmed and then set them aside.
+Resolve long-standing test failures so the suite can catch real regressions.
 → markdowns/status_threads/test-suite-hygiene_THREAD.md
 
 ### Repo housekeeping  [queued]
@@ -63,12 +63,12 @@ Low-priority disposition of leftover scratch files now tracked at the repo root 
 
 ### CLAUDE.md cross-branch persistence  [superseded]
 
-Superseded 2026-11-06: handed to claude-wrangler as the single owner — its Inbox item "Revive or retire the cross-branch context-file carry" carries this thread's unique TODOs (survey alternatives, shared-vs-branch split, carry the thread-file directory too). Drop this thread once that item is picked up.
+Superseded 2026-11-06 — handed to claude-wrangler as the single owner.
 → markdowns/status_threads/claude-md-cross-branch-persistence_THREAD.md
 
 ### Direct SQLite read layer  [idea]
 
-The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only SQLite layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes. Caveat: assumes the server shares a host with Joplin Desktop. Design considerations — including the rejected option of contributing filter params upstream to Joplin itself — in `markdowns/DESIGN_NOTES.md` → "Design: Direct SQLite read layer". First consumer in waiting: the dashboard's `Loader` interface (`dashboard/loader.py`) was built so a `JoplinSqliteLoader` can drop in — see CLAUDE.md Learnings → Design Decisions, "Dashboard reads over REST, not SQLite", for the triggers that would justify it.
+Read-only SQLite layer for filtered reads, keeping REST for writes.
 → markdowns/status_threads/direct-sqlite-read-layer_THREAD.md
 
 ### Fork enhancements  [idea]
@@ -78,12 +78,12 @@ Wish-list of fork-local additions; not formally scoped.
 
 ### MCP packaging / distribution infrastructure  [deferred]
 
-Extract the Docker/install infrastructure from the `archive/bulk-operations-monolith` tag (`3de13d4`) into a new `MatthewOGoodman/mcp-docker-dev` repo, not yet created, as reusable infrastructure for any MCP project. Parked, not started. What the tag holds, and the reasoning, in `markdowns/DESIGN_NOTES.md` → "Design: MCP packaging / distribution infrastructure".
+Extract the archived Docker/install tooling into a reusable mcp-docker-dev repo.
 → markdowns/status_threads/mcp-packaging-distribution-infrastructure_THREAD.md
 
 ### Joppy `utcfromtimestamp` deprecation warning  [deferred]
 
-`joppy/data_types.py:116` emits `DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version.` on every `joplin-dashboard` invocation. Cosmetic CLI noise; surfaced from a job_search session 2026-05-15. Deferred 2026-05-18 in favor of waiting on an upstream joppy fix — deprecated in CPython 3.12 with no removal version announced yet.
+Silence joppy's utcfromtimestamp DeprecationWarning on every dashboard run.
 → markdowns/status_threads/joppy-utcfromtimestamp-deprecation-warning_THREAD.md
 
 ## 4. Deliverables and Deadlines

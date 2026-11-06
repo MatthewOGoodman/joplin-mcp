@@ -1,6 +1,10 @@
 # Joppy `utcfromtimestamp` deprecation warning
 
-`joppy/data_types.py:116` emits `DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version.` on every `joplin-dashboard` invocation. Cosmetic CLI noise; surfaced from a job_search session 2026-05-15. Deferred 2026-05-18 in favor of waiting on an upstream joppy fix — deprecated in CPython 3.12 with no removal version announced yet.
+Silence joppy's utcfromtimestamp DeprecationWarning on every dashboard run.
+- `joppy/data_types.py:116` emits `DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version.` on every `joplin-dashboard` invocation.
+- Cosmetic CLI noise; surfaced from a job_search session 2026-05-15.
+- Deferred 2026-05-18 in favor of waiting on an upstream joppy fix — deprecated in CPython 3.12 with no removal version announced yet.
+
 
 ## TODO
 
