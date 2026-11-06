@@ -134,9 +134,9 @@ Two tracked scratch files have no permanent home; decide retention.
 - [ ] `SESSION-joplin-sync.md` — pasted transcript on iOS OneDrive sync recovery; lift any durable lesson into a CLAUDE.md Gotcha or a Joplin note, then delete
 - [ ] `markdowns/PR_DESCRIPTION_PR19_2026-03-30.md` — PR #19 closed 2026-04-06; likely archivable
 
-### CLAUDE.md cross-branch persistence  [idea]
+### CLAUDE.md cross-branch persistence  [superseded]
 
-CLAUDE.md disappears on checkout to clean PR branches, so Claude Code loses project context mid-session. The current proposal — a `## PROJ_SHARED_CLAUDE` section extracted to an untracked floater — is provisional and explicitly not final. Proposed design in `markdowns/DESIGN_NOTES.md` → "Design: CLAUDE.md cross-branch persistence".
+Superseded 2026-11-06: handed to claude-wrangler as the single owner — its Inbox item "Revive or retire the cross-branch context-file carry" carries this thread's unique TODOs (survey alternatives, shared-vs-branch split, carry the thread-file directory too). Drop this thread once that item is picked up.
 
 #### Survey alternatives before implementing  [ ]
 
@@ -148,7 +148,7 @@ The floating-file design should not be built until better options are ruled out.
 
 ### Direct SQLite read layer  [idea]
 
-The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only SQLite layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes. Caveat: assumes the server shares a host with Joplin Desktop. Design considerations — including the rejected option of contributing filter params upstream to Joplin itself — in `markdowns/DESIGN_NOTES.md` → "Design: Direct SQLite read layer".
+The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only SQLite layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes. Caveat: assumes the server shares a host with Joplin Desktop. Design considerations — including the rejected option of contributing filter params upstream to Joplin itself — in `markdowns/DESIGN_NOTES.md` → "Design: Direct SQLite read layer". First consumer in waiting: the dashboard's `Loader` interface (`dashboard/loader.py`) was built so a `JoplinSqliteLoader` can drop in — see CLAUDE.md Learnings → Design Decisions, "Dashboard reads over REST, not SQLite", for the triggers that would justify it.
 
 #### Frame the hybrid read/write architecture  [ ]
 
@@ -208,38 +208,6 @@ The cross-project blocker "Notebook-path support in dashboard YAML" is one this 
 
 ## 6. Read/Research Topics
 
-#### Cross-branch context-file persistence prior art  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Survey how other repos keep a context file alive across branch switches.
-- Do this before committing to the floating-file design
-- Feeds the "CLAUDE.md cross-branch persistence" thread
+No open research topics.
 
 ## 7. Inbox
-
-### Branch cleanup and upstream v0.10.0 sync  [x]
-
-start: 2026-11-05 11:49; update: 2026-11-05 20:05
-Prune merged and frozen branches, then bring main and feature/dev forward from v0.7.1 to upstream v0.10.0.
-- Hand-off from a job_search session; branch assessment done read-only on 2026-11-05.
-- Branch cleanup done 2026-11-05: `pr/restore-from-trash`, the bulk-ops monolith branch and `extract/mcp-docker-dev` deleted locally and on origin; tag `archive/bulk-operations-monolith` (`3de13d4`) keeps the monolith and Docker work reachable. Remote branches are now `main` and `feature/dev`.
-- Upstream fetched (v0.10.0, `b84c313`, 124 commits ahead). Sync plan: `markdowns/plans_completed/PLAN_upstream-v0.10.0-sync.md`. Upstream implemented #21 and #22 itself, so the "Upstream contributions" thread closes when the sync lands.
-- Done 2026-11-05: `main` fast-forwarded to `d4f6e19` and pushed; merged into `feature/dev` as `2b04329` (mdsync rewired onto `note_view` and the allowlist); `joplin-mcp` conda env upgraded to fastmcp 3.4.11; CLAUDE.md Upstream Relationship, Tool Inventory and pins updated; the upstream-contributions and upstream-sync threads closed.
-PLAN: markdowns/plans_completed/HANDOFF_20261105_114933_branch-cleanup-upstream-sync.md
-
-#### Thread-vs-design-note content split  [ ]
-
-start: 2026-08-01 22:50; update: 2026-08-01 22:50
-[CLAUDE.md: Design Decision] User-ruled convention established 2026-07-28 when `markdowns/DESIGN_NOTES.md` was created.
-- The rule: a STATUS.md thread carries the FINAL decision plus a brief rationale; the full sequence of decision-making and the alternatives considered belong in `markdowns/DESIGN_NOTES.md` ONLY.
-- Corollary already applied: a design note graduates out of the doc once its feature ships — the settled rationale moves to CLAUDE.md Learnings → Design Decisions, which is scoped to implemented work.
-- Worth recording as a durable Design Decision because the natural failure mode is the opposite: folding deliberation back into the thread, which is what an earlier pass of this session did before being corrected.
-
-#### md_tools replace re-levels inserted headings  [ ]
-
-start: 2026-08-01 22:50; update: 2026-08-01 22:50
-[CLAUDE.md: Gotcha] Surfaced 2026-07-28 during the STATUS.md schema migration.
-- `md_tools replace --stdin` normalizes the heading levels of the body it writes to first-child depth. Passing `#### Foo` as the new body of a `##` section silently lands it as `### Foo`.
-- That matters here because STATUS_SCHEMA puts §4 / §5 / §6 entries at `####` directly under `##` — so the canonical shape is exactly the case the normalizer rewrites. Sections 4 and 6 came out one level too shallow and had to be corrected afterwards with `md_tools subst` on each heading line.
-- Mitigation: after a `replace` that carries headings, verify with `md_tools list` and fix levels with `subst`; or build the section with `insert` per entry instead of one `replace`.
-- May also deserve a hand-off to claude-wrangler's "md_tools" thread — it is tool behavior, not a joplin-mcp fact.
