@@ -4,6 +4,7 @@ Uses mocked Joplin client. To test versioned scripts side-by-side, uncomment
 ALT_MODULE and the parameterized fixture below.
 """
 
+import datetime
 import importlib
 import time
 from types import SimpleNamespace
@@ -160,45 +161,6 @@ class TestFieldRegistry:
     def test_title_converter_is_identity(self, helpers):
         conv = helpers.JOPLIN_NOTE_FIELDS["title"]["type_converter"]
         assert conv("hello") == "hello"
-
-
-# ===========================================================================
-# extract_note_ids_from_result — identical in both versions
-# ===========================================================================
-
-
-SAMPLE_FORMATTED_OUTPUT = """SEARCH_QUERY: test
-TOTAL_RESULTS: 3
-
-RESULT_1:
-  note_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  title: Note A
-
-RESULT_2:
-  note_id: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  title: Note B
-
-RESULT_3:
-  note_id: cccccccccccccccccccccccccccccccc
-  title: Note C
-"""
-
-
-class TestExtractNoteIds:
-
-    def test_extracts_all(self, helpers):
-        ids = helpers.extract_note_ids_from_result(SAMPLE_FORMATTED_OUTPUT, 10)
-        assert ids == ["a" * 32, "b" * 32, "c" * 32]
-
-    def test_respects_limit(self, helpers):
-        ids = helpers.extract_note_ids_from_result(SAMPLE_FORMATTED_OUTPUT, 2)
-        assert len(ids) == 2
-
-    def test_empty_input(self, helpers):
-        assert helpers.extract_note_ids_from_result("", 10) == []
-
-    def test_no_matches(self, helpers):
-        assert helpers.extract_note_ids_from_result("just text\nno ids here", 10) == []
 
 
 # ===========================================================================
@@ -485,25 +447,25 @@ NOTEBOOK_ID = "b" * 32
 
 
 class TestMoveNoteTool:
-    """Tests for move_note MCP tool."""
+    """move_note: alias of update_note by name; shared move path by ID."""
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notes_bulk.get_notebook_id_by_name")
-    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
-    async def test_move_by_notebook_name(self, mock_get_client, mock_get_nb):
+    @patch("joplin_mcp.tools.notes.save_note_revision")
+    @patch("joplin_mcp.tools.notes.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notes.get_joplin_client")
+    async def test_name_delegates_to_update_note(self, mock_get_client, mock_get_nb, _bk):
         from joplin_mcp.tools.notes_bulk import move_note
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_get_nb.return_value = NOTEBOOK_ID
 
-        result = await move_note.fn(NOTE_ID, target_notebook="Archive")
+        result = await move_note.fn(NOTE_ID, target_notebook="Projects/Archive")
 
-        mock_get_nb.assert_called_once_with("Archive")
+        # update_note resolved the path and wrote parent_id: the alias added nothing
+        mock_get_nb.assert_called_once_with("Projects/Archive")
         mock_client.modify_note.assert_called_once_with(NOTE_ID, parent_id=NOTEBOOK_ID)
-        assert "UPDATE_NOTE" in result
-        assert "SUCCESS" in result
-        assert NOTEBOOK_ID in result
+        assert "UPDATE_NOTE" in result and "SUCCESS" in result
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
@@ -724,262 +686,234 @@ class TestManuallyBackupNoteTool:
 
 
 class TestBulkMoveNotesTool:
+    """bulk_move_notes: tag_note-style list input and report."""
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
     @patch("joplin_mcp.tools.notes_bulk.get_notebook_id_by_name")
     @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
-    async def test_moves_all_notes(self, mock_get_client, mock_get_nb, mock_backup):
+    async def test_moves_list(self, mock_get_client, mock_get_nb, mock_backup):
         from joplin_mcp.tools.notes_bulk import bulk_move_notes
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_get_nb.return_value = NOTEBOOK_ID
 
-        ids = ["a" * 32, "b" * 32, "c" * 32]
-        result = await bulk_move_notes.fn(ids, target_notebook="Archive")
+        ids = ["a" * 32, "c" * 32, "d" * 32]
+        result = await bulk_move_notes.fn(ids, notebook_name="Projects/Archive")
 
+        mock_get_nb.assert_called_once_with("Projects/Archive")
         assert mock_client.modify_note.call_count == 3
-        assert "moved_successfully: 3" in result
-        assert "success" in result
+        assert "OPERATION: BULK_MOVE_NOTES" in result
+        assert "TOTAL_OPS: 3" in result
+        assert "SUCCEEDED: 3" in result
+        assert "STATUS: SUCCESS" in result
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
-    @patch("joplin_mcp.tools.notes_bulk.get_notebook_id_by_name")
     @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
-    async def test_backup_called_daily(self, mock_get_client, mock_get_nb, mock_backup):
-        from joplin_mcp.tools.notes_bulk import bulk_move_notes
-
-        mock_get_client.return_value = MagicMock()
-        mock_get_nb.return_value = NOTEBOOK_ID
-
-        await bulk_move_notes.fn(["a" * 32], target_notebook="X")
-
-        mock_backup.assert_called_once_with(force=False, label="bulk-move")
-
-    @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
-    @patch("joplin_mcp.tools.notes_bulk.get_notebook_id_by_name")
-    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
-    async def test_backup_force(self, mock_get_client, mock_get_nb, mock_backup):
-        from joplin_mcp.tools.notes_bulk import bulk_move_notes
-
-        mock_get_client.return_value = MagicMock()
-        mock_get_nb.return_value = NOTEBOOK_ID
-
-        await bulk_move_notes.fn(["a" * 32], target_notebook="X", backup="force")
-
-        mock_backup.assert_called_once_with(force=True, label="bulk-move")
-
-    @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
-    @patch("joplin_mcp.tools.notes_bulk.get_notebook_id_by_name")
-    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
-    async def test_backup_suppress(self, mock_get_client, mock_get_nb, mock_backup):
-        from joplin_mcp.tools.notes_bulk import bulk_move_notes
-
-        mock_get_client.return_value = MagicMock()
-        mock_get_nb.return_value = NOTEBOOK_ID
-
-        await bulk_move_notes.fn(["a" * 32], target_notebook="X", backup="suppress")
-
-        mock_backup.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
-    @patch("joplin_mcp.tools.notes_bulk.get_notebook_id_by_name")
-    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
-    async def test_partial_failure(self, mock_get_client, mock_get_nb, mock_backup):
+    async def test_single_id_string(self, mock_get_client, mock_backup):
         from joplin_mcp.tools.notes_bulk import bulk_move_notes
 
         mock_client = MagicMock()
-        mock_client.modify_note.side_effect = [None, Exception("Not found"), None]
         mock_get_client.return_value = mock_client
-        mock_get_nb.return_value = NOTEBOOK_ID
 
-        ids = ["a" * 32, "b" * 32, "c" * 32]
-        result = await bulk_move_notes.fn(ids, target_notebook="Archive")
+        result = await bulk_move_notes.fn(NOTE_ID, target_notebook_id=NOTEBOOK_ID)
 
-        assert "moved_successfully: 2" in result
-        assert "partial_success" in result
-        assert "failed_moves: 1" in result
+        mock_client.modify_note.assert_called_once_with(NOTE_ID, parent_id=NOTEBOOK_ID)
+        assert "TOTAL_OPS: 1" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backup, called, force", [
+        ("daily", True, False), ("force", True, True), ("suppress", False, None),
+    ])
+    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
+    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
+    async def test_backup_modes(self, mock_get_client, mock_backup, backup, called, force):
+        from joplin_mcp.tools.notes_bulk import bulk_move_notes
+
+        mock_get_client.return_value = MagicMock()
+        await bulk_move_notes.fn([NOTE_ID], target_notebook_id=NOTEBOOK_ID, backup=backup)
+
+        if called:
+            mock_backup.assert_called_once_with(force=force, label="bulk-move")
+        else:
+            mock_backup.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
+    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
+    async def test_partial_failure(self, mock_get_client, mock_backup):
+        from joplin_mcp.tools.notes_bulk import bulk_move_notes
+
+        mock_client = MagicMock()
+        mock_client.modify_note.side_effect = [None, Exception("Not found")]
+        mock_get_client.return_value = mock_client
+
+        result = await bulk_move_notes.fn(["a" * 32, "c" * 32], target_notebook_id=NOTEBOOK_ID)
+
+        assert "STATUS: PARTIAL" in result
+        assert "SUCCEEDED: 1" in result
+        assert "FAILED: 1" in result
+        assert f"note_id={'c' * 32}" in result
+
+    @pytest.mark.asyncio
+    async def test_old_parameter_names_rejected(self):
+        """The rename is outright: the old keyword no longer exists."""
+        from joplin_mcp.tools.notes_bulk import bulk_move_notes
+
+        with pytest.raises(Exception, match="unexpected keyword argument '(note_ids|target_notebook)'"):
+            await bulk_move_notes.fn(note_ids=[NOTE_ID], target_notebook="Archive")
 
 
 class TestStripNoteTagsTool:
+    """strip_note_tags: list input, untag_note-style report."""
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.tags_bulk.process_search_results")
     @patch("joplin_mcp.tools.tags_bulk.get_joplin_client")
-    async def test_strips_all_tags(self, mock_get_client, mock_process):
+    async def test_strips_all_tags_from_list(self, mock_get_client):
         from joplin_mcp.tools.tags_bulk import strip_note_tags
 
         mock_client = MagicMock()
-        mock_note = SimpleNamespace(title="Test Note")
-        mock_client.get_note.return_value = mock_note
-        mock_get_client.return_value = mock_client
-
-        tags = [
-            SimpleNamespace(id="t" * 32, title="tag-a"),
-            SimpleNamespace(id="u" * 32, title="tag-b"),
+        mock_client.get_tags.side_effect = [
+            [SimpleNamespace(id="t" * 32, title="Work"), SimpleNamespace(id="u" * 32, title="Old")],
+            [SimpleNamespace(id="t" * 32, title="Work")],
         ]
-        mock_process.return_value = tags
+        mock_get_client.return_value = mock_client
 
-        result = await strip_note_tags.fn(NOTE_ID)
+        result = await strip_note_tags.fn(["a" * 32, "c" * 32])
 
-        assert "STRIP_TAGS" in result
-        assert "SUCCESS" in result
-        assert "TAGS_REMOVED: 2" in result
-        assert mock_client.delete.call_count == 2
+        assert mock_client.delete.call_count == 3
+        assert "OPERATION: STRIP_NOTE_TAGS" in result
+        assert "TOTAL_OPS: 3" in result
+        assert "SUCCEEDED: 3" in result
+        assert "NOTES_PROCESSED: 2 of 2" in result
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.tags_bulk.process_search_results")
     @patch("joplin_mcp.tools.tags_bulk.get_joplin_client")
-    async def test_no_tags(self, mock_get_client, mock_process):
+    async def test_no_tags(self, mock_get_client):
         from joplin_mcp.tools.tags_bulk import strip_note_tags
 
         mock_client = MagicMock()
-        mock_client.get_note.return_value = SimpleNamespace(title="Test")
+        mock_client.get_tags.return_value = []
         mock_get_client.return_value = mock_client
-        mock_process.return_value = []
 
         result = await strip_note_tags.fn(NOTE_ID)
 
-        assert "TAGS_REMOVED: 0" in result
-        assert "already has no tags" in result
+        mock_client.delete.assert_not_called()
+        assert "TOTAL_OPS: 0" in result
+        assert "NOTES_PROCESSED: 1 of 1" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.tags_bulk.get_joplin_client")
+    async def test_missing_note_is_a_failed_row(self, mock_get_client):
+        from joplin_mcp.tools.tags_bulk import strip_note_tags
+
+        mock_client = MagicMock()
+        mock_client.get_tags.side_effect = [Exception("Not found"), []]
+        mock_get_client.return_value = mock_client
+
+        result = await strip_note_tags.fn(["a" * 32, "c" * 32])
+
+        assert "FAILED: 1" in result
+        assert f"note_id={'a' * 32}" in result
+        assert "NOTES_PROCESSED: 1 of 2" in result
 
 
 class TestBulkTagNotesTool:
+    """bulk_tag_notes: pure alias of tag_note with list arguments."""
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.tags_bulk.get_tag_id_by_name")
-    @patch("joplin_mcp.tools.tags_bulk.get_joplin_client")
-    async def test_tags_all_notes(self, mock_get_client, mock_get_tag):
+    @patch("joplin_mcp.tools.tags.get_joplin_client")
+    async def test_delegates_cartesian_product(self, mock_get_client):
         from joplin_mcp.tools.tags_bulk import bulk_tag_notes
 
         mock_client = MagicMock()
-        mock_client.get_note.return_value = SimpleNamespace(title="Note")
+        mock_client.get_all_tags.return_value = [
+            SimpleNamespace(id="t" * 32, title="Work"),
+            SimpleNamespace(id="u" * 32, title="Urgent"),
+        ]
         mock_get_client.return_value = mock_client
-        mock_get_tag.return_value = "t" * 32
 
-        ids = ["a" * 32, "b" * 32]
-        result = await bulk_tag_notes.fn(ids, ["work", "urgent"])
+        result = await bulk_tag_notes.fn(["a" * 32, "c" * 32], ["Work", "Urgent"])
 
-        assert "BULK_TAG_NOTES" in result
-        assert "SUCCESS" in result
-        assert "TOTAL_OPERATIONS: 4" in result
         assert mock_client.add_tag_to_note.call_count == 4
+        assert "OPERATION: TAG_NOTE" in result
+        assert "TOTAL_OPS: 4" in result
 
     @pytest.mark.asyncio
     async def test_error_empty_note_ids(self):
         from joplin_mcp.tools.tags_bulk import bulk_tag_notes
 
-        with pytest.raises(ValueError, match="At least one note"):
-            await bulk_tag_notes.fn([], ["tag"])
+        with pytest.raises(ValueError, match="note_id list must not be empty"):
+            await bulk_tag_notes.fn([], ["Work"])
 
     @pytest.mark.asyncio
     async def test_error_empty_tag_names(self):
         from joplin_mcp.tools.tags_bulk import bulk_tag_notes
 
-        with pytest.raises(ValueError, match="At least one tag"):
-            await bulk_tag_notes.fn(["a" * 32], [])
-
-
-# ===========================================================================
-# GROUP 3: Trash, revision, and backup MCP tool tests
-# (list_trash, restore_from_trash, get_note_history,
-#  restore_note_revision, backup_database)
-# ===========================================================================
+        with pytest.raises(ValueError, match="tag_name list must not be empty"):
+            await bulk_tag_notes.fn([NOTE_ID], [])
 
 
 class TestListTrashTool:
+    """list_trash: notes via find_notes(trash=True), notebooks as fork code."""
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.trash.format_timestamp", return_value="2026-03-27 20:19")
-    @patch("joplin_mcp.tools.trash.get_joplin_client")
-    async def test_lists_trashed_notes(self, mock_get_client, mock_fmt_ts):
+    @patch("joplin_mcp.tools.trash.find_notes")
+    async def test_note_type_is_find_notes_alias(self, mock_find):
         from joplin_mcp.tools.trash import list_trash
-        import datetime as dt_module
+
+        async def fake_find(**kwargs):
+            return f"FIND_NOTES {kwargs}"
+
+        mock_find.fn = fake_find
+        result = await list_trash.fn(item_type="note", limit=5, offset=10)
+
+        assert result == "FIND_NOTES {'query': '*', 'limit': 5, 'offset': 10, 'trash': True}"
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.trash.get_joplin_client")
+    async def test_lists_trashed_notebooks(self, mock_get_client):
+        from joplin_mcp.tools.trash import list_trash
 
         mock_client = MagicMock()
-        trashed = SimpleNamespace(
-            id="a" * 32, title="Deleted Note",
-            deleted_time=dt_module.datetime(2026, 3, 27, 20, 19),
-            parent_id="b" * 32, is_todo=0,
-        )
-        active = SimpleNamespace(
-            id="c" * 32, title="Active Note",
-            deleted_time=dt_module.datetime(1970, 1, 1, 0, 0),
-            parent_id="b" * 32, is_todo=0,
-        )
-        mock_client.get_all_notes.return_value = [trashed, active]
+        deleted = datetime.datetime(2026, 1, 1, 12, 0)
         mock_client.get_all_notebooks.return_value = [
-            SimpleNamespace(id="b" * 32, title="Testing"),
+            SimpleNamespace(id="n" * 32, title="Old NB", deleted_time=deleted, parent_id=""),
+            SimpleNamespace(id="m" * 32, title="Live NB", deleted_time=None, parent_id=""),
         ]
         mock_get_client.return_value = mock_client
 
-        result = await list_trash.fn(item_type="note")
+        result = await list_trash.fn(item_type="notebook")
 
-        assert "TRASH_ITEMS: 1" in result
-        assert "Deleted Note" in result
-        assert "Testing" in result
+        assert "TRASHED_NOTEBOOKS: 1" in result
+        assert "Old NB" in result
+        assert "Live NB" not in result
 
     @pytest.mark.asyncio
     @patch("joplin_mcp.tools.trash.get_joplin_client")
-    async def test_empty_trash(self, mock_get_client):
+    @patch("joplin_mcp.tools.trash.find_notes")
+    async def test_default_returns_both_sections(self, mock_find, mock_get_client):
         from joplin_mcp.tools.trash import list_trash
-        import datetime as dt_module
 
-        mock_client = MagicMock()
-        active = SimpleNamespace(
-            id="a" * 32, title="Active",
-            deleted_time=dt_module.datetime(1970, 1, 1, 0, 0),
-            parent_id="b" * 32, is_todo=0,
-        )
-        mock_client.get_all_notes.return_value = [active]
-        mock_client.get_all_notebooks.return_value = []
-        mock_get_client.return_value = mock_client
+        async def fake_find(**kwargs):
+            return "NOTES_SECTION"
+
+        mock_find.fn = fake_find
+        mock_get_client.return_value.get_all_notebooks.return_value = []
 
         result = await list_trash.fn()
 
-        assert "TRASH_ITEMS: 0" in result
-        assert "empty" in result.lower()
-
-
-class TestRestoreFromTrashTool:
+        assert result.startswith("NOTES_SECTION\n\n")
+        assert "TRASHED_NOTEBOOKS: 0" in result
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.trash.get_joplin_client")
-    async def test_restore_note(self, mock_get_client):
-        from joplin_mcp.tools.trash import restore_from_trash
+    async def test_rejects_unknown_type(self):
+        from joplin_mcp.tools.trash import list_trash
 
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-
-        result = await restore_from_trash.fn(NOTE_ID, item_type="note")
-
-        mock_client.modify_note.assert_called_once_with(NOTE_ID, deleted_time=0)
-        assert "RESTORE_FROM_TRASH" in result
-        assert "SUCCESS" in result
-
-    @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.trash.get_joplin_client")
-    async def test_restore_notebook(self, mock_get_client):
-        from joplin_mcp.tools.trash import restore_from_trash
-
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-
-        result = await restore_from_trash.fn(NOTEBOOK_ID, item_type="notebook")
-
-        mock_client.modify_notebook.assert_called_once_with(NOTEBOOK_ID, deleted_time=0)
-        assert "notebook" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_invalid_type(self):
-        from joplin_mcp.tools.trash import restore_from_trash
-
-        with pytest.raises(ValueError, match="must be"):
-            await restore_from_trash.fn(NOTE_ID, item_type="tag")
+        with pytest.raises(ValueError, match="item_type must be"):
+            await list_trash.fn(item_type="tag")
 
 
 class TestGetNoteHistoryTool:
@@ -1050,9 +984,11 @@ class TestRestoreNoteRevisionTool:
         mock_client.add_note.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes_revisions.notebook_resolver")
+    @patch("joplin_mcp.tools.notes_revisions.get_notebook_id_by_name", side_effect=ValueError("not found"))
     @patch("joplin_mcp.tools.notes_revisions._reconstruct_revision_content")
     @patch("joplin_mcp.tools.notes_revisions.get_joplin_client")
-    async def test_falls_back_to_restored_notes(self, mock_get_client, mock_reconstruct):
+    async def test_falls_back_to_restored_notes(self, mock_get_client, mock_reconstruct, _nb, mock_resolver):
         from joplin_mcp.tools.notes_revisions import restore_note_revision
 
         mock_client = MagicMock()
@@ -1072,7 +1008,9 @@ class TestRestoreNoteRevisionTool:
         result = await restore_note_revision.fn("r" * 32)
 
         assert "SUCCESS" in result
-        # Should fall back since original notebook is trashed
+        # Should fall back since original notebook is trashed, creating
+        # "Restored Notes" through the resolver so its notebook cache sees it
+        mock_resolver.add_notebook.assert_called_once_with(title="Restored Notes")
         call_kwargs = mock_client.add_note.call_args[1]
         assert call_kwargs["title"] == "Old Title"
 
@@ -1125,3 +1063,220 @@ class TestBackupDatabaseTool:
         assert "FAILED" in result
         assert "alphanumeric" in result
         mock_backup.assert_not_called()
+
+# ===========================================================================
+# Notebook allowlist enforcement in fork tools
+# ===========================================================================
+
+ALLOWED_NB = "1" * 32
+DENIED_NB = "9" * 32
+
+
+@pytest.fixture
+def allowlist_on():
+    """Enable a notebook allowlist; access is decided by the patched checks below."""
+    from joplin_mcp.config import get_config, set_config
+
+    snapshot = get_config()
+    set_config(snapshot.copy(notebook_allowlist=["Allowed"]))
+    try:
+        yield
+    finally:
+        set_config(snapshot)
+
+
+def _deny_unless_allowed(notebook_id, allowlist_entries=None, **_):
+    from joplin_mcp.notebook_utils import AllowlistDeniedError
+
+    if notebook_id != ALLOWED_NB:
+        raise AllowlistDeniedError(f"Notebook {notebook_id} is not in the allowlist")
+
+
+def _accessible(notebook_id, allowlist_entries=None, **_):
+    return notebook_id == ALLOWED_NB
+
+
+def _client_with_parents(parents):
+    """Mock client whose get_note reports the parent notebook per note id."""
+    client = MagicMock()
+    client.get_note.side_effect = lambda nid, fields=None: SimpleNamespace(
+        id=nid, parent_id=parents[nid], title="T", body="B"
+    )
+    return client
+
+
+class TestForkToolsAllowlist:
+    """Each kept fork tool refuses notes in, and moves into, denied notebooks."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.field_helpers.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_bulk.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
+    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
+    async def test_bulk_move_skips_denied_source(self, mock_get_client, _bk, _v1, _v2, allowlist_on):
+        from joplin_mcp.tools.notes_bulk import bulk_move_notes
+
+        client = _client_with_parents({"a" * 32: ALLOWED_NB, "c" * 32: DENIED_NB})
+        mock_get_client.return_value = client
+
+        result = await bulk_move_notes.fn(["a" * 32, "c" * 32], target_notebook_id=ALLOWED_NB)
+
+        client.modify_note.assert_called_once_with("a" * 32, parent_id=ALLOWED_NB)
+        assert "FAILED: 1" in result and "allowlist" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.field_helpers.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_bulk.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
+    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
+    async def test_bulk_move_refuses_denied_destination(self, mock_get_client, _bk, _v1, _v2, allowlist_on):
+        from joplin_mcp.tools.notes_bulk import bulk_move_notes
+
+        client = _client_with_parents({"a" * 32: ALLOWED_NB})
+        mock_get_client.return_value = client
+
+        with pytest.raises(ValueError, match="allowlist"):
+            await bulk_move_notes.fn(["a" * 32], target_notebook_id=DENIED_NB)
+        client.modify_note.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.field_helpers.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_bulk.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
+    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
+    async def test_control_allowed_move_succeeds(self, mock_get_client, _bk, _v1, _v2, allowlist_on):
+        """Control: with the allowlist on, an allowed-to-allowed move goes through."""
+        from joplin_mcp.tools.notes_bulk import bulk_move_notes
+
+        client = _client_with_parents({"a" * 32: ALLOWED_NB})
+        mock_get_client.return_value = client
+
+        result = await bulk_move_notes.fn(["a" * 32], target_notebook_id=ALLOWED_NB)
+
+        assert "STATUS: SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.field_helpers.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.tags_bulk.get_joplin_client")
+    async def test_strip_tags_skips_denied_note(self, mock_get_client, _v, allowlist_on):
+        from joplin_mcp.tools.tags_bulk import strip_note_tags
+
+        client = _client_with_parents({"c" * 32: DENIED_NB})
+        client.get_tags.return_value = [SimpleNamespace(id="t" * 32, title="Work")]
+        mock_get_client.return_value = client
+
+        result = await strip_note_tags.fn("c" * 32)
+
+        client.delete.assert_not_called()
+        assert "FAILED: 1" in result and "allowlist" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.field_helpers.is_notebook_accessible", side_effect=_accessible)
+    async def test_search_excludes_denied_notes(self, _acc, allowlist_on):
+        from joplin_mcp.tools.field_helpers import _search_notes
+
+        client = MagicMock()
+        client.get_all_notes.return_value = [
+            _make_note(id="a" * 32, parent_id=ALLOWED_NB),
+            _make_note(id="c" * 32, parent_id=DENIED_NB),
+        ]
+
+        notes, skipped = _search_notes(client, "*")
+
+        assert [n.id for n in notes] == ["a" * 32]
+        assert skipped == 0  # denied notes are invisible, not "skipped"
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes_bulk.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_bulk.backup_joplin_database")
+    @patch("joplin_mcp.tools.notes_bulk.get_joplin_client")
+    async def test_bulk_update_refuses_denied_destination(self, mock_get_client, _bk, _v, allowlist_on):
+        from joplin_mcp.tools.notes_bulk import search_and_bulk_update_execute
+
+        client = MagicMock()
+        mock_get_client.return_value = client
+
+        with pytest.raises(ValueError, match="allowlist"):
+            await search_and_bulk_update_execute.fn("*", 1, "X", parent_id=DENIED_NB)
+        client.modify_note.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.field_helpers.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_revisions.get_joplin_client")
+    async def test_history_refuses_denied_note(self, mock_get_client, _v, allowlist_on):
+        from joplin_mcp.tools.notes_revisions import get_note_history
+
+        client = _client_with_parents({"c" * 32: DENIED_NB})
+        mock_get_client.return_value = client
+
+        with pytest.raises(ValueError, match="allowlist"):
+            await get_note_history.fn("c" * 32)
+        client.get_all_revisions.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.field_helpers.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_revisions.save_note_revision")
+    @patch("joplin_mcp.tools.notes_revisions.get_joplin_client")
+    async def test_manual_backup_refuses_denied_note(self, mock_get_client, mock_save, _v, allowlist_on):
+        from joplin_mcp.tools.notes_revisions import manually_backup_note
+
+        mock_get_client.return_value = _client_with_parents({"c" * 32: DENIED_NB})
+
+        with pytest.raises(ValueError, match="allowlist"):
+            await manually_backup_note.fn("c" * 32)
+        mock_save.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes_revisions.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_revisions._reconstruct_revision_content")
+    @patch("joplin_mcp.tools.notes_revisions.get_joplin_client")
+    async def test_restore_refuses_revision_from_denied_notebook(self, mock_get_client, mock_rc, _v, allowlist_on):
+        from joplin_mcp.tools.notes_revisions import restore_note_revision
+
+        client = MagicMock()
+        mock_get_client.return_value = client
+        mock_rc.return_value = {"title": "T", "body": "B", "metadata": {"parent_id": DENIED_NB}}
+
+        with pytest.raises(ValueError, match="allowlist"):
+            await restore_note_revision.fn("r" * 32, target_notebook="Allowed")
+        client.add_note.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notes_revisions.notebook_resolver")
+    @patch("joplin_mcp.tools.notes_revisions.get_notebook_id_by_name", side_effect=ValueError("not found"))
+    @patch("joplin_mcp.tools.notes_revisions.validate_notebook_access", side_effect=_deny_unless_allowed)
+    @patch("joplin_mcp.tools.notes_revisions._reconstruct_revision_content")
+    @patch("joplin_mcp.tools.notes_revisions.get_joplin_client")
+    async def test_restore_never_creates_fallback_under_allowlist(
+        self, mock_get_client, mock_rc, _v, _nb, mock_resolver, allowlist_on
+    ):
+        from joplin_mcp.tools.notes_revisions import restore_note_revision
+
+        client = MagicMock()
+        client.get_notebook.return_value = SimpleNamespace(
+            id=ALLOWED_NB, title="Gone", deleted_time=datetime.datetime(2026, 1, 1)
+        )
+        mock_get_client.return_value = client
+        mock_rc.return_value = {"title": "T", "body": "B", "metadata": {"parent_id": ALLOWED_NB}}
+
+        with pytest.raises(ValueError, match="pass target_notebook"):
+            await restore_note_revision.fn("r" * 32)
+        mock_resolver.add_notebook.assert_not_called()
+        client.add_note.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.trash.is_notebook_accessible", side_effect=_accessible)
+    @patch("joplin_mcp.tools.trash.get_joplin_client")
+    async def test_list_trash_hides_denied_notebooks(self, mock_get_client, _acc, allowlist_on):
+        from joplin_mcp.tools.trash import list_trash
+
+        deleted = datetime.datetime(2026, 1, 1)
+        mock_get_client.return_value.get_all_notebooks.return_value = [
+            SimpleNamespace(id=ALLOWED_NB, title="Allowed NB", deleted_time=deleted, parent_id=""),
+            SimpleNamespace(id=DENIED_NB, title="Denied NB", deleted_time=deleted, parent_id=""),
+        ]
+
+        result = await list_trash.fn(item_type="notebook")
+
+        assert "Allowed NB" in result
+        assert "Denied NB" not in result

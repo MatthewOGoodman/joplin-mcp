@@ -50,15 +50,31 @@ def _save_revision(client: Any, note_id: str) -> str | None:
 
 
 def _clear_cache() -> None:
-    from joplin_mcp.tools.notes import _clear_note_cache
+    from joplin_mcp.note_view import clear_note_cache
 
-    _clear_note_cache()
+    clear_note_cache()
 
 
 def _resolve_notebook_id(name: str) -> str:
     from joplin_mcp.notebook_utils import get_notebook_id_by_name
 
     return get_notebook_id_by_name(name)
+
+
+def _check_access(parent_id: str) -> None:
+    """Raise AllowlistDeniedError unless notebook ``parent_id`` is allowlisted.
+
+    A no-op when no notebook allowlist is configured. Every verb reads or writes
+    a note through a notebook, so each one passes that notebook through here:
+    the note it fetched (update, pull, push's existing-note paths) or the
+    notebook it is about to create in (push).
+    """
+    from joplin_mcp.config import get_config
+    from joplin_mcp.notebook_utils import validate_notebook_access
+
+    cfg = get_config()
+    if cfg.has_notebook_allowlist:
+        validate_notebook_access(parent_id or "", allowlist_entries=cfg.notebook_allowlist)
 
 
 # === Small shared helpers ===
@@ -104,14 +120,16 @@ def _notebook_path(client: Any, notebook_id: str | None) -> str:
 
 
 def _fetch_note(client: Any, note_id: str) -> Any:
-    """GET a note or raise ValueError with the underlying reason."""
+    """GET a note, raising ValueError if absent and AllowlistDeniedError if denied."""
     try:
-        return client.get_note(note_id, fields=_NOTE_FIELDS)
+        note = client.get_note(note_id, fields=_NOTE_FIELDS)
     except Exception as exc:
         raise ValueError(
             f"note '{note_id}' not found in Joplin ({exc}). "
             "If it was deleted, use 'push' to create it fresh."
         ) from exc
+    _check_access(getattr(note, "parent_id", "") or "")
+    return note
 
 
 def _current_tag_names(client: Any, note_id: str) -> list[str]:
@@ -350,6 +368,8 @@ def push_file(
             existing = client.get_note(meta.id, fields=_NOTE_FIELDS)
         except Exception:
             existing = None  # bound note was deleted → create fresh below
+        if existing is not None:
+            _check_access(getattr(existing, "parent_id", "") or "")
 
     notebook_name = notebook or meta.notebook
     push_title = title or meta.title or file_path.stem
@@ -362,6 +382,7 @@ def push_file(
                 "'notebook:' in the mdsync block"
             )
         parent_id = _resolve_notebook_id(notebook_name)
+        _check_access(parent_id)
         if not meta.id:
             # Duplicate-title guard, scoped to the target notebook. Quotes are
             # dropped from the query phrase; the exact match happens in Python.

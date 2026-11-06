@@ -491,3 +491,78 @@ class TestRoundTrip:
         assert meta.id == NOTE_ID
         assert meta.prior_Joplin_hash == body_hash(BODY_1)
         assert list(tmp_path.glob("*.bak")) == []
+
+
+DENIED_ID = "d" * 32
+
+
+class TestAllowlist:
+    """Every verb refuses a note or target notebook outside the notebook allowlist.
+
+    get_config and validate_notebook_access are patched at their source modules,
+    which _check_access imports from at call time. PARENT_ID is allowed;
+    DENIED_ID is not.
+    """
+
+    @pytest.fixture
+    def allowlist_on(self):
+        from joplin_mcp.notebook_utils import AllowlistDeniedError
+
+        cfg = SimpleNamespace(has_notebook_allowlist=True, notebook_allowlist=["Allowed"])
+
+        def _validate(nb_id, allowlist_entries):
+            if nb_id != PARENT_ID:
+                raise AllowlistDeniedError(f"notebook {nb_id} is not in the allowlist")
+
+        with patch("joplin_mcp.config.get_config", return_value=cfg), patch(
+            "joplin_mcp.notebook_utils.validate_notebook_access", side_effect=_validate
+        ) as validate:
+            yield validate
+
+    def test_control_allowed_update_succeeds(self, tmp_path, allowlist_on):
+        path = _bound_file(tmp_path, body=BODY_1)
+        client = _client(note=_note())
+        transport.update_file(str(path), client=client)
+        client.modify_note.assert_called_once()
+
+    def test_update_refuses_note_in_denied_notebook(self, tmp_path, allowlist_on):
+        from joplin_mcp.notebook_utils import AllowlistDeniedError
+
+        path = _bound_file(tmp_path, body=BODY_1)
+        client = _client(note=_note(parent_id=DENIED_ID))
+        with pytest.raises(AllowlistDeniedError):
+            transport.update_file(str(path), client=client)
+        client.modify_note.assert_not_called()
+
+    def test_pull_refuses_note_in_denied_notebook(self, tmp_path, allowlist_on):
+        from joplin_mcp.notebook_utils import AllowlistDeniedError
+
+        path = tmp_path / "pulled.md"
+        client = _client(note=_note(parent_id=DENIED_ID))
+        with pytest.raises(AllowlistDeniedError):
+            transport.pull_note(str(path), note_id=NOTE_ID, client=client)
+        assert not path.exists()
+
+    def test_push_refuses_create_in_denied_notebook(
+        self, tmp_path, allowlist_on, _patch_indirections
+    ):
+        from joplin_mcp.notebook_utils import AllowlistDeniedError
+
+        _patch_indirections.resolve_nb.return_value = DENIED_ID
+        path = tmp_path / "new.md"
+        path.write_text("# Fresh\n\ncontent\n")
+        client = _client(search=[])
+        with pytest.raises(AllowlistDeniedError):
+            transport.push_file(str(path), notebook="Secret", client=client)
+        client.add_note.assert_not_called()
+
+    def test_push_force_refuses_bound_note_in_denied_notebook(
+        self, tmp_path, allowlist_on
+    ):
+        from joplin_mcp.notebook_utils import AllowlistDeniedError
+
+        path = _bound_file(tmp_path, body=BODY_1)
+        client = _client(note=_note(parent_id=DENIED_ID))
+        with pytest.raises(AllowlistDeniedError):
+            transport.push_file(str(path), force=True, client=client)
+        client.modify_note.assert_not_called()

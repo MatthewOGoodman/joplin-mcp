@@ -1,8 +1,17 @@
-"""Tests for tools/notebooks.py - Notebook tool functions."""
+"""Tests for tools/notebooks.py - Notebook tool functions.
+
+Mutation tools route through ``notebook_resolver`` so cache invalidation is
+guaranteed by the resolver itself. Tests therefore patch the resolver
+instance imported into ``tools.notebooks`` and assert on its mutation
+methods rather than the raw client.
+"""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import ARG_VALIDATION_ERRORS
+
+RESOLVED_PARENT_ID = "abcdefabcdefabcdefabcdefabcdefab"
 
 
 def _get_tool_fn(tool):
@@ -43,7 +52,8 @@ class TestListNotebooksTool:
 
         mock_client.get_all_notebooks.assert_called_once()
         assert "id,title,created_time,updated_time,parent_id" in mock_client.get_all_notebooks.call_args[1]["fields"]
-        mock_format.assert_called_once_with(mock_notebooks, ItemType.notebook)
+        assert mock_format.call_args[0] == (mock_notebooks, ItemType.notebook)
+        assert "note_counts" in mock_format.call_args[1]
         assert result == "FORMATTED_NOTEBOOKS"
 
 
@@ -54,79 +64,171 @@ class TestCreateNotebookTool:
     """Tests for create_notebook tool."""
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_creates_notebook_successfully(self, mock_get_client, mock_invalidate):
-        """Should create a new notebook."""
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_creates_notebook_successfully(self, mock_resolver):
+        """Should create a new notebook through the resolver."""
         from joplin_mcp.tools.notebooks import create_notebook
 
-        mock_client = MagicMock()
-        mock_client.add_notebook.return_value = "new_notebook_id_12345"
-        mock_get_client.return_value = mock_client
+        mock_resolver.add_notebook.return_value = "new_notebook_id_12345"
 
         fn = _get_tool_fn(create_notebook)
         result = await fn(title="My New Notebook")
 
-        mock_client.add_notebook.assert_called_once_with(title="My New Notebook")
+        mock_resolver.add_notebook.assert_called_once_with(title="My New Notebook")
         assert "CREATE_NOTEBOOK" in result
         assert "SUCCESS" in result
         assert "My New Notebook" in result
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_creates_sub_notebook(self, mock_get_client, mock_invalidate):
-        """Should create a sub-notebook with parent_id."""
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_creates_sub_notebook_by_name(self, mock_resolver, mock_resolve):
+        """parent_name resolves to an id and is threaded to add_notebook."""
         from joplin_mcp.tools.notebooks import create_notebook
 
-        mock_client = MagicMock()
-        mock_client.add_notebook.return_value = "sub_notebook_id_67890"
-        mock_get_client.return_value = mock_client
+        mock_resolve.return_value = RESOLVED_PARENT_ID
+        mock_resolver.add_notebook.return_value = "sub_notebook_id_67890"
 
         fn = _get_tool_fn(create_notebook)
-        result = await fn(
-            title="Sub Notebook",
-            parent_id="parent_id_12345"
-        )
+        result = await fn(title="Sub Notebook", parent_name="Work")
 
-        mock_client.add_notebook.assert_called_once()
-        call_kwargs = mock_client.add_notebook.call_args[1]
+        mock_resolve.assert_called_once_with("Work")
+        call_kwargs = mock_resolver.add_notebook.call_args[1]
         assert call_kwargs["title"] == "Sub Notebook"
-        assert call_kwargs["parent_id"] == "parent_id_12345"
+        assert call_kwargs["parent_id"] == RESOLVED_PARENT_ID
         assert "SUCCESS" in result
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_invalidates_cache_after_create(self, mock_get_client, mock_invalidate):
-        """Should invalidate notebook cache after creating."""
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_creates_sub_notebook_by_path(self, mock_resolver, mock_resolve):
+        """parent_name supports path syntax."""
         from joplin_mcp.tools.notebooks import create_notebook
 
-        mock_client = MagicMock()
-        mock_client.add_notebook.return_value = "nb_id"
-        mock_get_client.return_value = mock_client
+        mock_resolve.return_value = RESOLVED_PARENT_ID
+        mock_resolver.add_notebook.return_value = "sub_notebook_id"
+
+        fn = _get_tool_fn(create_notebook)
+        await fn(title="Tasks", parent_name="Projects/Work")
+
+        mock_resolve.assert_called_once_with("Projects/Work")
+        call_kwargs = mock_resolver.add_notebook.call_args[1]
+        assert call_kwargs["parent_id"] == RESOLVED_PARENT_ID
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_propagates_resolver_not_found_error(
+        self, mock_resolver, mock_resolve
+    ):
+        """Resolver-not-found errors surface; no notebook is created."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolve.side_effect = ValueError("Notebook 'Missing' not found")
+
+        fn = _get_tool_fn(create_notebook)
+        with pytest.raises(ValueError, match="not found"):
+            await fn(title="Sub Notebook", parent_name="Missing")
+
+        mock_resolver.add_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_create_routes_through_resolver(self, mock_resolver):
+        """create_notebook should route the write through the resolver so the
+        resolver's mutation path can invalidate caches atomically."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolver.add_notebook.return_value = "nb_id"
 
         fn = _get_tool_fn(create_notebook)
         await fn(title="Test")
 
-        mock_invalidate.assert_called_once()
+        mock_resolver.add_notebook.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_strips_whitespace_from_parent_id(self, mock_get_client, mock_invalidate):
-        """Should strip whitespace from parent_id."""
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_accepts_explicit_null_parent_name(self, mock_resolver):
+        """Explicit parent_name=None creates a top-level notebook."""
         from joplin_mcp.tools.notebooks import create_notebook
 
-        mock_client = MagicMock()
-        mock_client.add_notebook.return_value = "nb_id"
-        mock_get_client.return_value = mock_client
+        mock_resolver.add_notebook.return_value = "nb_id"
+
+        await create_notebook.run({"title": "Top Level Notebook", "parent_name": None})
+
+        mock_resolver.add_notebook.assert_called_once_with(title="Top Level Notebook")
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_creates_with_emoji_icon(self, mock_resolver):
+        """Should serialise emoji into Joplin's icon JSON shape."""
+        import json
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolver.add_notebook.return_value = "nb_id"
 
         fn = _get_tool_fn(create_notebook)
-        await fn(title="Test", parent_id="  parent_id  ")
+        await fn(title="Tasks", emoji="🎯")
 
-        call_kwargs = mock_client.add_notebook.call_args[1]
-        assert call_kwargs["parent_id"] == "parent_id"
+        call_kwargs = mock_resolver.add_notebook.call_args[1]
+        assert call_kwargs["title"] == "Tasks"
+        assert json.loads(call_kwargs["icon"]) == {
+            "type": 1,
+            "emoji": "🎯",
+            "name": "",
+        }
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_creates_with_zwj_emoji_icon(self, mock_resolver):
+        """ZWJ emoji sequences (e.g. family, profession) round-trip cleanly."""
+        import json
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolver.add_notebook.return_value = "nb_id"
+
+        fn = _get_tool_fn(create_notebook)
+        await fn(title="Family", emoji="👨‍👩‍👧")
+
+        call_kwargs = mock_resolver.add_notebook.call_args[1]
+        assert json.loads(call_kwargs["icon"])["emoji"] == "👨‍👩‍👧"
+
+    @pytest.mark.asyncio
+    async def test_rejects_word_as_emoji(self):
+        """A non-emoji string should be rejected — guards against the agent
+        stuffing a title-like value into the emoji parameter."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        fn = _get_tool_fn(create_notebook)
+        with pytest.raises(ValueError, match="emoji"):
+            await fn(title="Bad", emoji="hello")
+
+    @pytest.mark.asyncio
+    async def test_rejects_over_long_emoji(self):
+        """Length cap protects against multi-emoji or pasted prose."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        fn = _get_tool_fn(create_notebook)
+        with pytest.raises(ValueError, match="emoji"):
+            await fn(title="Bad", emoji="this is a sentence, not an emoji")
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_accepts_long_zwj_sequence_with_skin_tones(self, mock_resolver):
+        """Skin-tone ZWJ sequences (e.g. kiss-with-skin-tones) can reach ~10
+        codepoints. They must clear the length cap or we'd reject legitimate
+        emojis chosen by Joplin's picker."""
+        import json
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolver.add_notebook.return_value = "nb_id"
+
+        kiss = "👩🏽‍❤️‍💋‍👨🏿"  # 10 codepoints
+        fn = _get_tool_fn(create_notebook)
+        await fn(title="Couple", emoji=kiss)
+
+        call_kwargs = mock_resolver.add_notebook.call_args[1]
+        assert json.loads(call_kwargs["icon"])["emoji"] == kiss
 
 
 # === Tests for update_notebook tool ===
@@ -136,14 +238,10 @@ class TestUpdateNotebookTool:
     """Tests for update_notebook tool."""
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_updates_notebook_title(self, mock_get_client, mock_invalidate):
-        """Should update notebook title."""
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_updates_notebook_title(self, mock_resolver):
+        """Should update notebook title through the resolver."""
         from joplin_mcp.tools.notebooks import update_notebook
-
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
 
         fn = _get_tool_fn(update_notebook)
         result = await fn(
@@ -151,7 +249,7 @@ class TestUpdateNotebookTool:
             title="Renamed Notebook"
         )
 
-        mock_client.modify_notebook.assert_called_once_with(
+        mock_resolver.modify_notebook.assert_called_once_with(
             "12345678901234567890123456789012",
             title="Renamed Notebook"
         )
@@ -159,14 +257,11 @@ class TestUpdateNotebookTool:
         assert "SUCCESS" in result
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_invalidates_cache_after_update(self, mock_get_client, mock_invalidate):
-        """Should invalidate notebook cache after updating."""
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_update_routes_through_resolver(self, mock_resolver):
+        """update_notebook should route the write through the resolver so its
+        mutation path can invalidate caches atomically."""
         from joplin_mcp.tools.notebooks import update_notebook
-
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
 
         fn = _get_tool_fn(update_notebook)
         await fn(
@@ -174,7 +269,206 @@ class TestUpdateNotebookTool:
             title="New Title"
         )
 
-        mock_invalidate.assert_called_once()
+        mock_resolver.modify_notebook.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_updates_emoji_only(self, mock_resolver):
+        """Should accept emoji-only updates without requiring a title."""
+        import json
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        fn = _get_tool_fn(update_notebook)
+        await fn(
+            notebook_id="12345678901234567890123456789012",
+            emoji="🕰️",
+        )
+
+        call_args, call_kwargs = mock_resolver.modify_notebook.call_args
+        assert call_args == ("12345678901234567890123456789012",)
+        assert "title" not in call_kwargs
+        assert json.loads(call_kwargs["icon"]) == {
+            "type": 1,
+            "emoji": "🕰️",
+            "name": "",
+        }
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_clears_emoji_with_empty_string(self, mock_resolver):
+        """`emoji=""` should clear the icon by sending an empty string to Joplin."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        fn = _get_tool_fn(update_notebook)
+        await fn(
+            notebook_id="12345678901234567890123456789012",
+            emoji="",
+        )
+
+        _, call_kwargs = mock_resolver.modify_notebook.call_args
+        assert call_kwargs["icon"] == ""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_updates_title_and_emoji_together(self, mock_resolver):
+        """Both fields can be updated in a single call."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        fn = _get_tool_fn(update_notebook)
+        await fn(
+            notebook_id="12345678901234567890123456789012",
+            title="Renamed",
+            emoji="📁",
+        )
+
+        _, call_kwargs = mock_resolver.modify_notebook.call_args
+        assert call_kwargs["title"] == "Renamed"
+        assert "icon" in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_rejects_update_with_no_fields(self):
+        """Calling update_notebook with nothing to change should be an error."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        fn = _get_tool_fn(update_notebook)
+        with pytest.raises(ValueError, match="At least one field"):
+            await fn(notebook_id="12345678901234567890123456789012")
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_title(self):
+        """An empty `title` would silently rename the notebook to "" — reject
+        it at the Pydantic boundary instead. Regression guard."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        with pytest.raises(ARG_VALIDATION_ERRORS, match="at least 1 character"):
+            await update_notebook.run(
+                {
+                    "notebook_id": "12345678901234567890123456789012",
+                    "title": "",
+                }
+            )
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_move_via_parent_name(self, mock_resolver, mock_resolve):
+        """parent_name resolves and threads parent_id to modify_notebook."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        mock_resolve.return_value = RESOLVED_PARENT_ID
+        mock_resolver.would_create_cycle.return_value = False
+
+        fn = _get_tool_fn(update_notebook)
+        await fn(
+            notebook_id="12345678901234567890123456789012",
+            parent_name="Archive",
+        )
+
+        mock_resolve.assert_called_once_with("Archive")
+        _, call_kwargs = mock_resolver.modify_notebook.call_args
+        assert call_kwargs["parent_id"] == RESOLVED_PARENT_ID
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_move_to_root_via_slash(self, mock_resolver):
+        """parent_name='/' threads an empty parent_id (Joplin's root sentinel)."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        mock_resolver.would_create_cycle.return_value = False
+
+        fn = _get_tool_fn(update_notebook)
+        await fn(
+            notebook_id="12345678901234567890123456789012",
+            parent_name="/",
+        )
+
+        _, call_kwargs = mock_resolver.modify_notebook.call_args
+        assert call_kwargs["parent_id"] == ""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_move_propagates_resolver_not_found(
+        self, mock_resolver, mock_resolve
+    ):
+        """Resolver errors surface; no modify_notebook call."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        mock_resolve.side_effect = ValueError("Notebook 'Missing' not found")
+
+        fn = _get_tool_fn(update_notebook)
+        with pytest.raises(ValueError, match="not found"):
+            await fn(
+                notebook_id="12345678901234567890123456789012",
+                parent_name="Missing",
+            )
+
+        mock_resolver.modify_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_move_rejects_cycle(self, mock_resolver, mock_resolve):
+        """Cycle detection rejects the move before any modify_notebook call.
+
+        Joplin's REST API silently accepts cycles, so the tool must catch
+        them up-front. Regression guard for the probe finding.
+        """
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        mock_resolve.return_value = "descendant_id_0000000000000000000"
+        mock_resolver.would_create_cycle.return_value = True
+
+        fn = _get_tool_fn(update_notebook)
+        with pytest.raises(ValueError, match="under itself or one of its descendants"):
+            await fn(
+                notebook_id="12345678901234567890123456789012",
+                parent_name="Child",
+            )
+
+        mock_resolver.modify_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_move_rejects_self(self, mock_resolver):
+        """Self-move (parent_name resolves to the source itself) is rejected
+        by the cycle check (would_create_cycle returns True for self)."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        # Mock the cycle check directly — it owns the self-move semantic.
+        mock_resolver.would_create_cycle.return_value = True
+
+        with patch(
+            "joplin_mcp.tools.notebooks.get_notebook_id_by_name",
+            return_value="12345678901234567890123456789012",
+        ):
+            fn = _get_tool_fn(update_notebook)
+            with pytest.raises(ValueError, match="under itself"):
+                await fn(
+                    notebook_id="12345678901234567890123456789012",
+                    parent_name="Self",
+                )
+
+        mock_resolver.modify_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_move_to_root_alone_satisfies_field_guard(self, mock_resolver):
+        """parent_name='/' alone is a real change, so the at-least-one-field
+        check must not reject it (regression guard)."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        mock_resolver.would_create_cycle.return_value = False
+
+        fn = _get_tool_fn(update_notebook)
+        # No title, no emoji, only parent_name="/" — should succeed.
+        result = await fn(
+            notebook_id="12345678901234567890123456789012",
+            parent_name="/",
+        )
+
+        mock_resolver.modify_notebook.assert_called_once()
+        assert "SUCCESS" in result
 
 
 # === Tests for delete_notebook tool ===
@@ -184,85 +478,210 @@ class TestDeleteNotebookTool:
     """Tests for delete_notebook tool."""
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
     @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_deletes_notebook(self, mock_get_client, mock_invalidate):
-        """Should delete a notebook."""
+    async def test_deletes_notebook(self, mock_get_client, mock_resolver):
+        """Should delete a notebook through the resolver."""
         from joplin_mcp.tools.notebooks import delete_notebook
 
         mock_client = MagicMock()
+        mock_client.get_notebook.return_value = MagicMock(id="12345678901234567890123456789012")
         mock_get_client.return_value = mock_client
 
         fn = _get_tool_fn(delete_notebook)
         result = await fn(notebook_id="12345678901234567890123456789012")
 
-        mock_client.delete_notebook.assert_called_once_with(
+        mock_resolver.delete_notebook.assert_called_once_with(
             "12345678901234567890123456789012"
         )
         assert "DELETE_NOTEBOOK" in result
         assert "SUCCESS" in result
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
     @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_invalidates_cache_after_delete(self, mock_get_client, mock_invalidate):
-        """Should invalidate notebook cache after deleting."""
+    async def test_delete_routes_through_resolver(self, mock_get_client, mock_resolver):
+        """delete_notebook should route the write through the resolver so its
+        mutation path can invalidate caches atomically."""
         from joplin_mcp.tools.notebooks import delete_notebook
 
         mock_client = MagicMock()
+        mock_client.get_notebook.return_value = MagicMock(id="12345678901234567890123456789012")
         mock_get_client.return_value = mock_client
 
         fn = _get_tool_fn(delete_notebook)
         await fn(notebook_id="12345678901234567890123456789012")
 
-        mock_invalidate.assert_called_once()
-
-
-# === Integration tests for cache invalidation ===
-
-
-class TestNotebookCacheInvalidation:
-    """Tests to verify all mutating operations invalidate the cache."""
+        mock_resolver.delete_notebook.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
     @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_create_invalidates_cache(self, mock_get_client, mock_invalidate):
-        """create_notebook should invalidate cache."""
-        from joplin_mcp.tools.notebooks import create_notebook
-
-        mock_client = MagicMock()
-        mock_client.add_notebook.return_value = "id"
-        mock_get_client.return_value = mock_client
-
-        fn = _get_tool_fn(create_notebook)
-        await fn(title="Test")
-        mock_invalidate.assert_called()
-
-    @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_update_invalidates_cache(self, mock_get_client, mock_invalidate):
-        """update_notebook should invalidate cache."""
-        from joplin_mcp.tools.notebooks import update_notebook
-
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-
-        fn = _get_tool_fn(update_notebook)
-        await fn(notebook_id="12345678901234567890123456789012", title="Test")
-        mock_invalidate.assert_called()
-
-    @pytest.mark.asyncio
-    @patch("joplin_mcp.tools.notebooks.invalidate_notebook_map_cache")
-    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
-    async def test_delete_invalidates_cache(self, mock_get_client, mock_invalidate):
-        """delete_notebook should invalidate cache."""
+    async def test_raises_when_notebook_missing(self, mock_get_client, mock_resolver):
+        """Joplin's DELETE is idempotent — silently 200s on a missing notebook.
+        delete_notebook must GET first and surface the 404 so a caller doesn't
+        see SUCCESS for a no-op. Regression for the smoke-test finding."""
         from joplin_mcp.tools.notebooks import delete_notebook
 
         mock_client = MagicMock()
+        mock_client.get_notebook.side_effect = RuntimeError(
+            "404 Client Error: Not Found for url: http://localhost:41184/folders/00000000000000000000000000000000?token=***"
+        )
         mock_get_client.return_value = mock_client
 
         fn = _get_tool_fn(delete_notebook)
-        await fn(notebook_id="12345678901234567890123456789012")
-        mock_invalidate.assert_called()
+        with pytest.raises(ValueError, match="404"):
+            await fn(notebook_id="00000000000000000000000000000000")
+
+        mock_resolver.delete_notebook.assert_not_called()
+
+
+# === Tests for _format_notebook_icon (list_notebooks output parsing) ===
+
+
+class TestFormatNotebookIcon:
+    """Tests for the icon-field renderer used by format_item_list."""
+
+    def test_renders_emoji_icon(self):
+        from joplin_mcp.fastmcp_server import _format_notebook_icon
+
+        line = _format_notebook_icon('{"type":1,"emoji":"🎯","name":""}')
+        assert line == "  emoji: 🎯"
+
+    def test_renders_zwj_emoji_icon(self):
+        from joplin_mcp.fastmcp_server import _format_notebook_icon
+
+        line = _format_notebook_icon('{"type":1,"emoji":"👨‍👩‍👧","name":""}')
+        assert line == "  emoji: 👨‍👩‍👧"
+
+    def test_renders_legacy_typeless_emoji_icon(self):
+        """Older Joplin entries in the wild store emoji icons without an
+        explicit `type` field. Dispatching on the `emoji` key (not `type==1`)
+        keeps them rendering correctly."""
+        from joplin_mcp.fastmcp_server import _format_notebook_icon
+
+        line = _format_notebook_icon('{"emoji":"🎩","name":"top hat"}')
+        assert line == "  emoji: 🎩"
+
+    def test_flags_image_icon(self):
+        """Non-emoji icon types should be surfaced as 'image' so the agent
+        knows an icon exists without trying to render it."""
+        from joplin_mcp.fastmcp_server import _format_notebook_icon
+
+        line = _format_notebook_icon('{"type":2,"name":"folder","dataUrl":"data:image/png;base64,..."}')
+        assert line == "  icon: image"
+
+    def test_skips_empty_icon(self):
+        from joplin_mcp.fastmcp_server import _format_notebook_icon
+
+        assert _format_notebook_icon("") is None
+        assert _format_notebook_icon(None) is None
+
+    def test_skips_unparseable_icon(self):
+        """Corrupt or unexpected JSON should be silently skipped rather than
+        breaking the listing."""
+        from joplin_mcp.fastmcp_server import _format_notebook_icon
+
+        assert _format_notebook_icon("not json at all") is None
+        assert _format_notebook_icon("[1,2,3]") is None  # JSON but not a dict
+
+    def test_skips_emoji_type_without_emoji_field(self):
+        """A type=1 icon with no emoji glyph is malformed — skip rather than
+        render an empty line."""
+        from joplin_mcp.fastmcp_server import _format_notebook_icon
+
+        assert _format_notebook_icon('{"type":1,"name":""}') is None
+
+
+class TestListNotebooksNoteCounts:
+    """Counts come from one bulk query, not one query per notebook."""
+
+    def _notebook(self, nb_id, title):
+        nb = MagicMock()
+        nb.id = nb_id
+        nb.title = title
+        nb.parent_id = ""
+        nb.icon = None
+        nb.created_time = 1609459200000
+        nb.updated_time = 1609545600000
+        return nb
+
+    def _note(self, parent_id):
+        note = MagicMock()
+        note.parent_id = parent_id
+        return note
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_counts_notes_per_notebook(self, mock_get_client):
+        """Each notebook reports how many notes sit directly in it."""
+        from joplin_mcp.tools.notebooks import list_notebooks
+
+        client = MagicMock()
+        client.get_all_notebooks.return_value = [
+            self._notebook("a" * 32, "Work"),
+            self._notebook("b" * 32, "Empty"),
+        ]
+        client.get_all_notes.return_value = [
+            self._note("a" * 32),
+            self._note("a" * 32),
+            self._note("c" * 32),
+        ]
+        mock_get_client.return_value = client
+
+        result = await _get_tool_fn(list_notebooks)()
+
+        assert client.get_all_notes.call_count == 1
+        assert client.get_all_notes.call_args[1]["fields"] == "id,parent_id"
+        work = result.split("ITEM_2:")[0]
+        assert "note_count: 2" in work
+        assert "note_count: 0" in result.split("ITEM_2:")[1]
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_listing_survives_a_failed_count(self, mock_get_client):
+        """A count query that fails must not take the whole listing down."""
+        from joplin_mcp.tools.notebooks import list_notebooks
+
+        client = MagicMock()
+        client.get_all_notebooks.return_value = [self._notebook("a" * 32, "Work")]
+        client.get_all_notes.side_effect = RuntimeError("boom")
+        mock_get_client.return_value = client
+
+        result = await _get_tool_fn(list_notebooks)()
+
+        assert "title: Work" in result
+        assert "note_count:" not in result
+
+
+class TestListingVerbosity:
+    """Decorative fields stay out of the way unless asked for."""
+
+    def _notebook(self):
+        nb = MagicMock()
+        nb.id = "a" * 32
+        nb.title = "Work"
+        nb.parent_id = "b" * 32
+        nb.icon = '{"type": 1, "emoji": "\U0001f3af", "name": ""}'
+        nb.created_time = 1609459200000
+        nb.updated_time = 1609545600000
+        return nb
+
+    def test_default_listing_omits_decoration(self):
+        """id, title and path are what an agent acts on; the rest is noise."""
+        from joplin_mcp.fastmcp_server import ItemType, format_item_list
+
+        result = format_item_list([self._notebook()], ItemType.notebook)
+
+        assert "title: Work" in result
+        for field in ("parent_id:", "created:", "updated:", "emoji:"):
+            assert field not in result
+
+    def test_verbose_listing_restores_decoration(self):
+        """The off switch has to actually switch it back on."""
+        from joplin_mcp.fastmcp_server import ItemType, format_item_list
+
+        result = format_item_list([self._notebook()], ItemType.notebook, verbose=True)
+
+        for field in ("parent_id:", "created:", "updated:", "emoji:"):
+            assert field in result

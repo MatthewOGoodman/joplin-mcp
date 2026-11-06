@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
 
 # Add src directory to path so we can import our modules
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -20,14 +21,16 @@ from joplin_mcp.fastmcp_server import mcp
 
 
 @pytest.mark.asyncio
-async def test_basic_functionality():
+async def test_basic_functionality(monkeypatch):
     """Test basic FastMCP server functionality."""
     print("🧪 Testing FastMCP Joplin Server...")
 
-    # Check if we have the required environment variables
+    # Set via monkeypatch so it reverts: environment variables now override
+    # config files, so a token leaking out of this test changes what every
+    # later file-precedence test resolves to.
     if not os.getenv("JOPLIN_TOKEN"):
         print("⚠️  JOPLIN_TOKEN not set. Setting a dummy token for testing...")
-        os.environ["JOPLIN_TOKEN"] = "dummy_token_for_testing"
+        monkeypatch.setenv("JOPLIN_TOKEN", "dummy_token_for_testing")
 
     try:
         # Test server initialization
@@ -224,6 +227,36 @@ async def test_update_note_has_todo_due_param():
             pytest.fail("update_note tool not found")
 
 
+@pytest.mark.asyncio
+async def test_import_from_file_schema_uses_object_for_import_options():
+    """Test that import_from_file exposes import_options as an object-only schema.
+
+    Some MCP clients reject union schemas here, especially Dict|str|None, so the
+    wire schema should stay object-shaped while the Python implementation can
+    still keep legacy string parsing for direct callers.
+    """
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+        for tool in tools:
+            if tool.name == "import_from_file":
+                schema = tool.inputSchema
+                assert schema and "properties" in schema
+                properties = schema["properties"]
+                assert "import_options" in properties
+                import_options = properties["import_options"]
+                assert "anyOf" in import_options
+                option_types = {option["type"] for option in import_options["anyOf"]}
+                assert option_types == {"object", "null"}
+                object_branch = next(
+                    option for option in import_options["anyOf"] if option["type"] == "object"
+                )
+                assert object_branch["additionalProperties"] is False
+                assert set(object_branch["required"]) == set(object_branch["properties"].keys())
+                break
+        else:
+            pytest.fail("import_from_file tool not found")
+
+
 # === Tests for path-based notebook resolution ===
 
 
@@ -237,7 +270,7 @@ def test_resolve_notebook_by_path_simple():
         "nb2": {"title": "Personal", "parent_id": None},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         result = _resolve_notebook_by_path("Work")
         assert result == "nb1"
 
@@ -254,7 +287,7 @@ def test_resolve_notebook_by_path_nested():
         "child2": {"title": "tasks", "parent_id": "parent2"},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         # Should find the correct 'tasks' notebook under 'Project A'
         result = _resolve_notebook_by_path("Project A/tasks")
         assert result == "child1"
@@ -275,7 +308,7 @@ def test_resolve_notebook_by_path_deeply_nested():
         "leaf": {"title": "Tasks", "parent_id": "mid"},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         result = _resolve_notebook_by_path("Projects/Work/Tasks")
         assert result == "leaf"
 
@@ -289,7 +322,7 @@ def test_resolve_notebook_by_path_case_insensitive():
         "nb1": {"title": "Work Projects", "parent_id": None},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         result = _resolve_notebook_by_path("work projects")
         assert result == "nb1"
         result = _resolve_notebook_by_path("WORK PROJECTS")
@@ -305,7 +338,7 @@ def test_resolve_notebook_by_path_not_found():
         "nb1": {"title": "Work", "parent_id": None},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         with pytest.raises(ValueError) as exc_info:
             _resolve_notebook_by_path("NonExistent/tasks")
         assert "NonExistent" in str(exc_info.value)
@@ -335,7 +368,7 @@ def test_resolve_notebook_by_path_handles_whitespace():
         "nb2": {"title": "Tasks", "parent_id": "nb1"},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         # Extra whitespace around components should be handled
         result = _resolve_notebook_by_path("  Work  /  Tasks  ")
         assert result == "nb2"
@@ -351,7 +384,7 @@ def test_get_notebook_id_by_name_uses_path_for_slash():
         "child": {"title": "Work", "parent_id": "parent"},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         result = get_notebook_id_by_name("Projects/Work")
         assert result == "child"
 
@@ -417,6 +450,95 @@ def test_find_notebook_suggestions_exact_match_first():
     assert suggestions[0] == "personal"  # Exact match first
 
 
+def test_get_notebook_id_by_name_flat_hides_denied_notebooks(override_config):
+    """Flat-name not-found error must not leak titles of allowlist-denied notebooks."""
+    from unittest.mock import patch
+    from joplin_mcp.notebook_utils import get_notebook_id_by_name
+
+    # Two top-level notebooks; only "Work" is allowlisted.
+    full_map = {
+        "work_id": {"title": "Work", "parent_id": None},
+        "secret_id": {"title": "Secrets", "parent_id": None},
+    }
+
+    with override_config(notebook_allowlist=["Work"]), patch(
+        "joplin_mcp.notebook_utils.notebook_resolver.get_map",
+        return_value=full_map,
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            get_notebook_id_by_name("NonExistent")
+        msg = str(exc_info.value)
+        assert "Secrets" not in msg
+        assert "Available notebooks" not in msg
+
+
+def test_get_notebook_id_by_name_flat_resolves_allowlisted(override_config):
+    """Flat name in the allowlisted set must still resolve."""
+    from unittest.mock import patch
+    from joplin_mcp.notebook_utils import get_notebook_id_by_name
+
+    full_map = {
+        "work_id": {"title": "Work", "parent_id": None},
+        "secret_id": {"title": "Secrets", "parent_id": None},
+    }
+
+    with override_config(notebook_allowlist=["Work"]), patch(
+        "joplin_mcp.notebook_utils.notebook_resolver.get_map",
+        return_value=full_map,
+    ):
+        assert get_notebook_id_by_name("Work") == "work_id"
+
+
+def test_get_notebook_id_by_name_flat_multi_match_only_lists_accessible(override_config):
+    """Multi-match disambiguation must not surface denied notebook paths."""
+    from unittest.mock import patch
+    from joplin_mcp.notebook_utils import get_notebook_id_by_name
+
+    # Two notebooks both named "Inbox": one under allowed Work, one under denied Personal.
+    full_map = {
+        "work_id": {"title": "Work", "parent_id": None},
+        "work_inbox_id": {"title": "Inbox", "parent_id": "work_id"},
+        "personal_id": {"title": "Personal", "parent_id": None},
+        "personal_inbox_id": {"title": "Inbox", "parent_id": "personal_id"},
+    }
+
+    with override_config(notebook_allowlist=["Work", "Work/**"]), patch(
+        "joplin_mcp.notebook_utils.notebook_resolver.get_map",
+        return_value=full_map,
+    ):
+        # Only Work/Inbox is accessible — single match, should resolve cleanly.
+        assert get_notebook_id_by_name("Inbox") == "work_inbox_id"
+
+
+def test_get_notebook_id_by_name_flat_multi_match_disambiguation_filtered(override_config):
+    """When multiple accessible notebooks share a name, paths come from the filtered map."""
+    from unittest.mock import patch
+    from joplin_mcp.notebook_utils import get_notebook_id_by_name
+
+    full_map = {
+        "work_id": {"title": "Work", "parent_id": None},
+        "work_inbox_id": {"title": "Inbox", "parent_id": "work_id"},
+        "ai_id": {"title": "AI", "parent_id": None},
+        "ai_inbox_id": {"title": "Inbox", "parent_id": "ai_id"},
+        "personal_id": {"title": "Personal", "parent_id": None},
+        "personal_inbox_id": {"title": "Inbox", "parent_id": "personal_id"},
+    }
+
+    with override_config(
+        notebook_allowlist=["Work", "Work/**", "AI", "AI/**"]
+    ), patch(
+        "joplin_mcp.notebook_utils.notebook_resolver.get_map",
+        return_value=full_map,
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            get_notebook_id_by_name("Inbox")
+        msg = str(exc_info.value)
+        assert "Work/Inbox" in msg
+        assert "AI/Inbox" in msg
+        assert "Personal/Inbox" not in msg
+        assert "Personal" not in msg
+
+
 def test_resolve_notebook_by_path_suggests_on_not_found():
     """Test _resolve_notebook_by_path provides suggestions when path component not found."""
     from unittest.mock import patch
@@ -427,7 +549,7 @@ def test_resolve_notebook_by_path_suggests_on_not_found():
         "projects": {"title": "projects", "parent_id": "gtd"},
     }
 
-    with patch("joplin_mcp.notebook_utils.get_notebook_map_cached", return_value=mock_map):
+    with patch("joplin_mcp.notebook_utils.notebook_resolver.get_map", return_value=mock_map):
         with pytest.raises(ValueError) as exc_info:
             _resolve_notebook_by_path("projects/personal")
         error_msg = str(exc_info.value)
@@ -479,21 +601,129 @@ def test_compute_notebook_path_returns_none_for_empty():
     assert _compute_notebook_path("", {}) is None
 
 
-def test_invalidate_notebook_map_cache():
-    """Test invalidate_notebook_map_cache resets cache."""
-    from joplin_mcp.notebook_utils import (
-        invalidate_notebook_map_cache,
-        _NOTEBOOK_MAP_CACHE,
-    )
+class TestWouldCreateCycle:
+    """Tests for NotebookResolver.would_create_cycle.
 
-    # Set some cache values
-    _NOTEBOOK_MAP_CACHE["built_at"] = 999.0
-    _NOTEBOOK_MAP_CACHE["map"] = {"test": "value"}
+    Joplin's REST API does not reject cycles or self-moves on PUT /folders/:id
+    -- it silently 200s and leaves the database in an unreachable loop. The
+    tool layer relies on this check to refuse cycle-creating moves before any
+    API call.
+    """
 
-    invalidate_notebook_map_cache()
+    @staticmethod
+    def _patch_map(resolver, nb_map):
+        """Install a fake map on the resolver, bypassing the cache fetch."""
+        from unittest.mock import patch
+        return patch.object(resolver, "get_map", return_value=nb_map)
 
-    assert _NOTEBOOK_MAP_CACHE["built_at"] == 0.0
-    assert _NOTEBOOK_MAP_CACHE["map"] is None
+    def test_root_destination_never_cycles(self):
+        from joplin_mcp.notebook_utils import notebook_resolver
+
+        with self._patch_map(notebook_resolver, {}):
+            assert (
+                notebook_resolver.would_create_cycle("any_id", "") is False
+            )
+
+    def test_self_move_is_a_cycle(self):
+        from joplin_mcp.notebook_utils import notebook_resolver
+
+        # Even an empty map should catch a self-move via the early-return.
+        with self._patch_map(notebook_resolver, {}):
+            assert (
+                notebook_resolver.would_create_cycle("nb_a", "nb_a") is True
+            )
+
+    def test_one_deep_descendant_is_a_cycle(self):
+        from joplin_mcp.notebook_utils import notebook_resolver
+
+        # B is a child of A. Moving A under B would loop.
+        nb_map = {
+            "nb_a": {"parent_id": ""},
+            "nb_b": {"parent_id": "nb_a"},
+        }
+        with self._patch_map(notebook_resolver, nb_map):
+            assert (
+                notebook_resolver.would_create_cycle("nb_a", "nb_b") is True
+            )
+
+    def test_n_deep_descendant_is_a_cycle(self):
+        from joplin_mcp.notebook_utils import notebook_resolver
+
+        # A -> B -> C -> D. Moving A under D would loop.
+        nb_map = {
+            "nb_a": {"parent_id": ""},
+            "nb_b": {"parent_id": "nb_a"},
+            "nb_c": {"parent_id": "nb_b"},
+            "nb_d": {"parent_id": "nb_c"},
+        }
+        with self._patch_map(notebook_resolver, nb_map):
+            assert (
+                notebook_resolver.would_create_cycle("nb_a", "nb_d") is True
+            )
+
+    def test_sibling_move_is_not_a_cycle(self):
+        from joplin_mcp.notebook_utils import notebook_resolver
+
+        # B and C share parent A. Moving B under C is fine.
+        nb_map = {
+            "nb_a": {"parent_id": ""},
+            "nb_b": {"parent_id": "nb_a"},
+            "nb_c": {"parent_id": "nb_a"},
+        }
+        with self._patch_map(notebook_resolver, nb_map):
+            assert (
+                notebook_resolver.would_create_cycle("nb_b", "nb_c") is False
+            )
+
+    def test_unrelated_subtree_move_is_not_a_cycle(self):
+        from joplin_mcp.notebook_utils import notebook_resolver
+
+        # A -> B; X -> Y. Moving B under Y crosses subtrees -- no cycle.
+        nb_map = {
+            "nb_a": {"parent_id": ""},
+            "nb_b": {"parent_id": "nb_a"},
+            "nb_x": {"parent_id": ""},
+            "nb_y": {"parent_id": "nb_x"},
+        }
+        with self._patch_map(notebook_resolver, nb_map):
+            assert (
+                notebook_resolver.would_create_cycle("nb_b", "nb_y") is False
+            )
+
+    def test_walk_terminates_on_pre_existing_cycle_in_map(self):
+        """Defensive: if the cached map already contains a cycle (corrupt
+        state from earlier writes that bypassed this check), the walk must
+        still terminate via the visited set."""
+        from joplin_mcp.notebook_utils import notebook_resolver
+
+        nb_map = {
+            "nb_a": {"parent_id": "nb_b"},
+            "nb_b": {"parent_id": "nb_a"},  # pre-existing loop
+        }
+        with self._patch_map(notebook_resolver, nb_map):
+            # nb_c isn't in the loop -- moving it under nb_a should terminate
+            # and return False (no cycle relative to nb_c).
+            assert (
+                notebook_resolver.would_create_cycle("nb_c", "nb_a") is False
+            )
+
+
+def test_invalidate_resets_resolver_cache():
+    """NotebookResolver.invalidate clears the cached map and allowlist specs."""
+    from joplin_mcp.notebook_utils import notebook_resolver
+
+    # Seed cache state via the resolver's instance attrs
+    notebook_resolver._map = {"test": "value"}
+    notebook_resolver._map_built_at = 999.0
+    notebook_resolver._allowlist_entries = ["Work"]
+    notebook_resolver._allowlist_built_at = 999.0
+
+    notebook_resolver.invalidate()
+
+    assert notebook_resolver._map is None
+    assert notebook_resolver._map_built_at == 0.0
+    assert notebook_resolver._allowlist_entries is None
+    assert notebook_resolver._allowlist_built_at == 0.0
 
 
 def test_get_notebook_cache_ttl_from_env():
@@ -519,6 +749,132 @@ def test_get_notebook_cache_ttl_from_env():
 
     # Cleanup
     del os.environ["JOPLIN_MCP_NOTEBOOK_CACHE_TTL"]
+
+
+# === Tests for register_tools (config-driven tool gating) ===
+
+
+def _all_enabled_config():
+    """Build a JoplinMCPConfig with an empty tools dict so every registry
+    entry resolves to ``True`` via ``config.tools.get(name, True)``."""
+    from joplin_mcp.config import JoplinMCPConfig
+
+    cfg = JoplinMCPConfig()
+    cfg.tools = {}
+    return cfg
+
+
+@pytest.fixture
+def _restore_all_tools():
+    """Re-register every tool after a gating test mutates ``mcp``.
+
+    Uses an all-enabled config so subsequent tests (including ones that
+    don't touch register_tools at all) see the full tool surface that
+    eager decoration originally produced.
+    """
+    yield
+    from joplin_mcp.fastmcp_server import mcp, register_tools
+
+    register_tools(mcp, _all_enabled_config())
+
+
+@pytest.mark.asyncio
+async def test_register_tools_enables_all_by_default(_restore_all_tools):
+    """An empty tools dict means every registry entry resolves True; the
+    public MCP client surface lists every one."""
+    from joplin_mcp.fastmcp_server import _tool_registry, mcp, register_tools
+
+    enabled = register_tools(mcp, _all_enabled_config())
+    assert set(enabled) == {name for name, _ in _tool_registry}
+
+    async with Client(mcp) as client:
+        listed = {tool.name for tool in await client.list_tools()}
+    assert listed == set(enabled)
+
+
+@pytest.mark.asyncio
+async def test_register_tools_removes_disabled(_restore_all_tools):
+    """A tool flagged False in config disappears from both the internal
+    manager and the public MCP client surface."""
+    from joplin_mcp.fastmcp_server import mcp, register_tools
+
+    cfg = _all_enabled_config()
+    cfg.tools["get_note"] = False
+    enabled = register_tools(mcp, cfg)
+
+    assert "get_note" not in enabled
+    async with Client(mcp) as client:
+        listed = {tool.name for tool in await client.list_tools()}
+    assert "get_note" not in listed
+    # Sanity: another tool that's not disabled is still present.
+    assert "list_notebooks" in listed
+
+
+@pytest.mark.asyncio
+async def test_register_tools_is_idempotent_under_recall(_restore_all_tools):
+    """Disabling then re-enabling restores the tool; register_tools is the
+    only state machine, no leftover state from prior calls."""
+    from joplin_mcp.fastmcp_server import mcp, register_tools
+
+    cfg_off = _all_enabled_config()
+    cfg_off.tools["get_note"] = False
+    register_tools(mcp, cfg_off)
+    async with Client(mcp) as client:
+        listed_off = {tool.name for tool in await client.list_tools()}
+    assert "get_note" not in listed_off
+
+    register_tools(mcp, _all_enabled_config())
+    async with Client(mcp) as client:
+        listed_on = {tool.name for tool in await client.list_tools()}
+    assert "get_note" in listed_on
+
+
+class TestStartupRefusesPermissiveFallback:
+    """main() must not serve the permissive stand-in config.
+
+    Discovery cannot raise at import, so a failed load leaves defaults in
+    place: 19 tools enabled, no notebook allowlist. get_joplin_client() also
+    recovers JOPLIN_TOKEN from the environment by itself, so without this
+    guard a restrictive config plus one malformed override yields a live,
+    authenticated server with write tools and unrestricted notebook access.
+    """
+
+    def test_main_refuses_to_start_when_discovery_failed(self):
+        from joplin_mcp.config import ConfigError
+        from joplin_mcp import fastmcp_server
+
+        with patch.object(
+            fastmcp_server,
+            "get_config_load_error",
+            return_value=ConfigError("Invalid integer value for port: abc"),
+        ):
+            with patch.object(fastmcp_server, "register_tools") as register:
+                with patch.object(fastmcp_server.mcp, "run") as run:
+                    with pytest.raises(ConfigError, match="Refusing to start"):
+                        fastmcp_server.main()
+
+        # No tools registered and nothing served.
+        register.assert_not_called()
+        run.assert_not_called()
+
+    def test_main_proceeds_when_discovery_succeeded(self):
+        from joplin_mcp import fastmcp_server
+
+        with patch.object(
+            fastmcp_server, "get_config_load_error", return_value=None
+        ):
+            with patch.object(
+                fastmcp_server, "register_tools", return_value=["ping_joplin"]
+            ):
+                with patch.object(fastmcp_server, "get_joplin_client"):
+                    with patch.object(
+                        fastmcp_server.notebook_resolver,
+                        "validate_allowlist_at_startup",
+                    ):
+                        with patch.object(fastmcp_server.mcp, "run") as run:
+                            fastmcp_server.main()
+
+        run.assert_called_once()
 
 
 def main():

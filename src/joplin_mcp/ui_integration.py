@@ -115,6 +115,7 @@ def get_permission_settings() -> Dict[str, bool]:
         "update_tag",
         "tag_note",
         "untag_note",
+        "restore_from_trash",
     ]
 
     delete_tools = ["delete_note", "delete_notebook", "delete_tag"]
@@ -294,35 +295,10 @@ def get_content_privacy_settings() -> Dict[str, Union[str, int]]:
         else:
             print_warning("Please enter 'none', 'preview', or 'full'.")
 
-    # 3. Note Listings
-    print()
-    print_colored("3. 📂 NOTE LISTINGS", Colors.MAGENTA + Colors.BOLD)
-    print_info("   When listing notes by notebook/tag, what content should be visible?")
-    print_info("   Contexts: find_notes_in_notebook, find_notes_with_tag")
-    print()
-
-    while True:
-        default_listings = JoplinMCPConfig.DEFAULT_CONTENT_EXPOSURE["listings"]
-        listing_level = (
-            input(
-                f"Note listings content level (none/preview/full) [default: {default_listings}]: "
-            )
-            .lower()
-            .strip()
-        )
-        if listing_level in ("", default_listings):
-            content_exposure["listings"] = default_listings
-            break
-        elif listing_level in ("none", "preview", "full"):
-            content_exposure["listings"] = listing_level
-            break
-        else:
-            print_warning("Please enter 'none', 'preview', or 'full'.")
-
-    # 4. Preview Length (if any previews are enabled)
+    # 3. Preview Length (if any previews are enabled)
     if any(level == "preview" for level in content_exposure.values()):
         print()
-        print_colored("4. ✂️  PREVIEW LENGTH", Colors.CYAN + Colors.BOLD)
+        print_colored("3. ✂️  PREVIEW LENGTH", Colors.CYAN + Colors.BOLD)
         print_info("   Maximum length for content previews (in characters)")
         print()
 
@@ -357,12 +333,12 @@ def get_content_privacy_settings() -> Dict[str, Union[str, int]]:
     print_colored("🔒 Privacy Summary:", Colors.BOLD)
     print_info(f"• Search results: {content_exposure['search_results']}")
     print_info(f"• Individual notes: {content_exposure['individual_notes']}")
-    print_info(f"• Note listings: {content_exposure['listings']}")
     print_info(f"• Preview length: {content_exposure['max_preview_length']} characters")
 
-    # Privacy assessment
+    # Privacy assessment: 2 points per hidden context, 1 per preview-only,
+    # so 4 means nothing is exposed and 0 means both contexts show full bodies.
     privacy_score = 0
-    for context in ["search_results", "individual_notes", "listings"]:
+    for context in JoplinMCPConfig.CONTENT_EXPOSURE_CONTEXTS:
         level = content_exposure[context]
         if level == "none":
             privacy_score += 2
@@ -371,11 +347,11 @@ def get_content_privacy_settings() -> Dict[str, Union[str, int]]:
         # "full" adds 0
 
     print()
-    if privacy_score >= 5:
+    if privacy_score >= 4:
         print_colored(
             "✅ High Privacy: Minimal content exposure", Colors.GREEN + Colors.BOLD
         )
-    elif privacy_score >= 3:
+    elif privacy_score >= 1:
         print_colored(
             "⚠️  Balanced Privacy: Some content visible", Colors.YELLOW + Colors.BOLD
         )
@@ -388,6 +364,156 @@ def get_content_privacy_settings() -> Dict[str, Union[str, int]]:
         )
 
     return content_exposure
+
+
+def get_notebook_allowlist_settings() -> Optional[List[str]]:
+    """Prompt for notebook allowlist opt-in.
+
+    Returns:
+        ``None`` if the user declines (server stays unrestricted), or a
+        non-empty list of notebook names/IDs if they opt in. An empty
+        allowlist is never returned: opting in without supplying entries
+        would lock the agent out of every notebook, so we re-prompt until
+        at least one entry is given (or the user backs out with Ctrl-C).
+    """
+    print_step("Notebook Allowlist (Optional)")
+    print_info("Restrict the AI assistant to specific notebooks only.")
+    print_info(
+        "Useful if you want to keep personal/sensitive notebooks out of reach."
+    )
+    print_info("Leave disabled to allow access to all notebooks (default).")
+    print()
+
+    while True:
+        choice = (
+            input("Restrict the agent to specific notebooks? (y/n) [default: n]: ")
+            .lower()
+            .strip()
+        )
+        if choice in ("n", "no", ""):
+            print_info("Allowlist disabled -- all notebooks accessible.")
+            return None
+        elif choice in ("y", "yes"):
+            break
+        else:
+            print_warning("Please enter 'y' for yes or 'n' for no.")
+
+    print_info("Enter notebook names or IDs the agent may access.")
+    print_info("Separate multiple entries with commas (e.g. 'work, projects').")
+
+    while True:
+        raw = input("Allowed notebooks: ").strip()
+        entries = [e.strip() for e in raw.split(",") if e.strip()]
+        if entries:
+            label = "entry" if len(entries) == 1 else "entries"
+            print_info(f"Allowlist set to {len(entries)} {label}.")
+            return entries
+        print_warning(
+            "At least one notebook name or ID is required. "
+            "An empty allowlist would block every notebook."
+        )
+
+
+# === INTERACTIVE CONFIG CONSTRUCTION ===
+#
+# These functions live alongside the prompt helpers above rather than as
+# classmethods on JoplinMCPConfig: config.py stays a pure data module, and
+# the data class doesn't have to reach up into the installer UI.
+
+
+def create_config_interactively(
+    token: Optional[str] = None,
+    include_permissions: bool = True,
+    include_content_privacy: bool = True,
+    include_notebook_allowlist: bool = True,
+    **defaults: Any,
+) -> JoplinMCPConfig:
+    """Build a JoplinMCPConfig by prompting the user.
+
+    Args:
+        token: Pre-provided token (skip the token prompt if given).
+        include_permissions: Whether to prompt for tool permissions.
+        include_content_privacy: Whether to prompt for content privacy settings.
+        include_notebook_allowlist: Whether to prompt for notebook allowlist opt-in.
+        defaults: Default values for the connection-level fields
+            (``host``, ``port``, ``timeout``, ``verify_ssl``).
+
+    Returns:
+        A configured JoplinMCPConfig instance.
+    """
+    if not token:
+        token = get_token_interactively()
+
+    if include_permissions:
+        tool_permissions = get_permission_settings()
+    else:
+        tool_permissions = JoplinMCPConfig.DEFAULT_TOOLS.copy()
+
+    if include_content_privacy:
+        content_privacy = get_content_privacy_settings()
+    else:
+        content_privacy = JoplinMCPConfig.DEFAULT_CONTENT_EXPOSURE.copy()
+
+    if include_notebook_allowlist:
+        notebook_allowlist = get_notebook_allowlist_settings()
+    else:
+        notebook_allowlist = None
+
+    config_kwargs = {
+        "host": defaults.get("host", JoplinMCPConfig.DEFAULT_CONNECTION["host"]),
+        "port": defaults.get("port", JoplinMCPConfig.DEFAULT_CONNECTION["port"]),
+        "token": token,
+        "timeout": defaults.get(
+            "timeout", JoplinMCPConfig.DEFAULT_CONNECTION["timeout"]
+        ),
+        "verify_ssl": defaults.get(
+            "verify_ssl", JoplinMCPConfig.DEFAULT_CONNECTION["verify_ssl"]
+        ),
+        "tools": tool_permissions,
+        "content_exposure": content_privacy,
+        "notebook_allowlist": notebook_allowlist,
+    }
+
+    return JoplinMCPConfig(**config_kwargs)
+
+
+def save_config_to_path(
+    config: JoplinMCPConfig,
+    suggested_path: Optional[Path] = None,
+    include_token: bool = True,
+) -> Path:
+    """Write ``config`` to ``suggested_path`` (or a default in CWD) as JSON.
+
+    No prompts run here -- the caller supplies the path. Lives alongside
+    ``create_config_interactively`` so the installer has one place to look.
+    """
+    if not suggested_path:
+        suggested_path = Path.cwd() / "joplin-mcp.json"
+
+    config_path = suggested_path
+
+    config_data: Dict[str, Any] = {
+        "host": config.host,
+        "port": config.port,
+        "timeout": config.timeout,
+        "verify_ssl": config.verify_ssl,
+        "tools": config.tools.copy(),
+        "content_exposure": config.content_exposure.copy(),
+    }
+
+    # Only persist the allowlist when one is configured; omit when unrestricted
+    # so the JSON stays minimal and matches the "unset = allow all" convention.
+    if config.has_notebook_allowlist:
+        config_data["notebook_allowlist"] = list(config.notebook_allowlist)
+
+    if include_token and config.token:
+        config_data["token"] = config.token
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w") as f:
+        json.dump(config_data, f, indent=2)
+
+    return config_path
 
 
 # === CHAT INTERFACE INTEGRATION ===
@@ -792,7 +918,7 @@ def test_joplin_connection(config_path: Path) -> bool:
             return False
     except ImportError:
         print_warning("Could not import Joplin MCP modules.")
-        print_info("Make sure to install dependencies: pip install -r requirements.txt")
+        print_info("Make sure the package is installed: pip install joplin-mcp")
         return False
     except Exception as e:
         print_error(f"Connection test failed: {e}")

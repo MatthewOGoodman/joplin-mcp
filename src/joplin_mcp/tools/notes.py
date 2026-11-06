@@ -1,46 +1,9 @@
 """Note tools for Joplin MCP."""
-import time
 from typing import Annotated, Any, Dict, List, Optional, Union
 
 from pydantic import Field
 
-
-# === NOTE CACHE FOR SEQUENTIAL READING ===
-# Caches one note to avoid re-fetching when reading in chunks.
-
-_cached_note: Any = None
-_cached_note_id: Optional[str] = None
-_cached_at: float = 0.0
-
-
-def _get_cached_note(note_id: str) -> Any:
-    """Return cached note if it matches and is fresh (30s), else None."""
-    if _cached_note_id == note_id and (time.monotonic() - _cached_at) < 30:
-        return _cached_note
-    return None
-
-
-def _set_cached_note(note_id: str, note: Any) -> None:
-    """Cache a note (replaces any previous)."""
-    global _cached_note, _cached_note_id, _cached_at
-    _cached_note = note
-    _cached_note_id = note_id
-    _cached_at = time.monotonic()
-
-
-def _clear_note_cache() -> None:
-    """Clear the note cache."""
-    global _cached_note, _cached_note_id, _cached_at
-    _cached_note = None
-    _cached_note_id = None
-    _cached_at = 0.0
-
-from joplin_mcp.content_utils import (
-    create_content_preview,
-    create_toc_only,
-    extract_section_content,
-    parse_markdown_headings,
-)
+from joplin_mcp import note_view
 from joplin_mcp.fastmcp_server import (
     COMMON_NOTE_FIELDS,
     ItemType,
@@ -53,24 +16,14 @@ from joplin_mcp.fastmcp_server import (
     RequiredStringType,
     SortBy,
     SortOrder,
-    _compute_notebook_path,
-    _module_config,
-    apply_pagination,
-    build_pagination_summary,
-    build_search_filters,
     create_tool,
     flexible_bool_converter,
     flexible_enum_converter,
     format_creation_success,
     format_delete_success,
     format_no_results_message,
-    format_note_details,
-    format_search_criteria,
-    format_search_results_with_pagination,
     format_update_success,
     get_joplin_client,
-    get_notebook_id_by_name,
-    get_notebook_map_cached,
     optional_int_converter,
     process_search_results,
     resolve_sort_params,
@@ -81,254 +34,58 @@ from joplin_mcp.revision_utils import save_note_revision
 from joplin_mcp.tools.field_helpers import convert_todo_completed
 from joplin_mcp.formatting import (
     build_pagination_header,
-    format_find_in_note_summary,
-    format_note_metadata_lines,
+)
+from joplin_mcp.note_view import (
+    _build_find_in_note_header,
+    format_search_results_with_pagination,
+)
+from joplin_mcp.config import get_config
+from joplin_mcp.notebook_utils import (
+    _compute_notebook_path,
+    get_notebook_id_by_name,
+    get_notebook_map_cached,
+    is_notebook_accessible,
+    validate_notebook_access,
 )
 
 
-# === NOTE HELPER FUNCTIONS ===
+def build_search_filters(task: Optional[bool], completed: Optional[bool]) -> List[str]:
+    """Build search filter parts for task and completion status."""
+    search_parts = []
+
+    if task is not None:
+        if task:
+            search_parts.append("type:todo")
+        else:
+            search_parts.append("type:note")
+
+    # completion is a tasks-only concept; ignore the filter on regular notes
+    if completed is not None and task is True:
+        if completed:
+            search_parts.append("iscompleted:1")
+        else:
+            search_parts.append("iscompleted:0")
+
+    return search_parts
 
 
-def _create_note_object(note: Any, body_override: str = None) -> Any:
-    """Create a note object with optional body override."""
-
-    class ModifiedNote:
-        def __init__(self, original_note, body_override=None):
-            for attr in [
-                "id",
-                "title",
-                "created_time",
-                "updated_time",
-                "parent_id",
-                "is_todo",
-                "todo_completed",
-            ]:
-                setattr(self, attr, getattr(original_note, attr, None))
-            self.body = (
-                body_override
-                if body_override is not None
-                else getattr(original_note, "body", "")
-            )
-
-    return ModifiedNote(note, body_override)
-
-
-def _handle_section_extraction(
-    note: Any, section: str, note_id: str, include_body: bool
-) -> Optional[str]:
-    """Handle section extraction logic, returning formatted result or None if no section handling needed."""
-    if not (section and include_body):
-        return None
-
-    body = getattr(note, "body", "")
-    if not body:
-        return None
-
-    section_content, section_title = extract_section_content(body, section)
-    if section_content:
-        modified_note = _create_note_object(note, section_content)
-        result = format_note_details(modified_note, include_body, "individual_notes")
-        return f"EXTRACTED_SECTION: {section_title}\nSECTION_QUERY: {section}\n{result}"
-
-    # Section not found - show available sections with line numbers
-    headings = parse_markdown_headings(body)
-    section_list = [
-        f"{'  ' * (heading['level'] - 1)}{i}. {heading['title']} (line {heading['line_idx']})"
-        for i, heading in enumerate(headings, 1)
-    ]
-    available_sections = (
-        "\n".join(section_list) if section_list else "No sections found"
-    )
-
-    return f"""SECTION_NOT_FOUND: {section}
-NOTE_ID: {note_id}
-NOTE_TITLE: {getattr(note, 'title', 'Untitled')}
-AVAILABLE_SECTIONS:
-{available_sections}
-ERROR: Section '{section}' not found in note"""
-
-
-def _handle_toc_display(
-    note: Any, note_id: str, display_mode: str, original_body: str = None
+def format_search_criteria(
+    base_criteria: str, task: Optional[bool], completed: Optional[bool]
 ) -> str:
-    """Handle TOC display with metadata and navigation info."""
-    toc = create_toc_only(original_body or getattr(note, "body", ""))
-    if not toc:
-        return None
+    """Format search criteria description with filters."""
+    criteria_parts = [base_criteria]
 
-    # Create note with empty body for metadata-only display
-    toc_note = _create_note_object(note, "")
-    metadata_result = format_note_details(
-        toc_note,
-        include_body=False,
-        context="individual_notes",
-        original_body=original_body,
-    )
+    if task is True:
+        criteria_parts.append("(tasks only)")
+    elif task is False:
+        criteria_parts.append("(regular notes only)")
 
-    # Build navigation steps based on display mode
-    if display_mode == "explicit":
-        steps = f"""NEXT_STEPS:
-- To get specific section: get_note("{note_id}", section="1") or get_note("{note_id}", section="Introduction")
-- To jump to line number: get_note("{note_id}", start_line=45) (using line numbers from TOC above)
-- To get full content: get_note("{note_id}", force_full=True)"""
-    else:  # smart_toc_auto
-        steps = f"""NEXT_STEPS:
-- To get specific section: get_note("{note_id}", section="1") or get_note("{note_id}", section="Introduction")
-- To jump to line number: get_note("{note_id}", start_line=45) (using line numbers from TOC above)
-- To force full content: get_note("{note_id}", force_full=True)"""
+    if completed is True:
+        criteria_parts.append("(completed)")
+    elif completed is False:
+        criteria_parts.append("(uncompleted)")
 
-    toc_info = f"DISPLAY_MODE: {display_mode}\n\n{toc}\n\n{steps}"
-    return f"{metadata_result}\n\n{toc_info}"
-
-
-def _handle_line_extraction(
-    note: Any,
-    start_line: int,
-    line_count: Optional[int],
-    note_id: str,
-    include_body: bool,
-) -> Optional[str]:
-    """Handle line-based extraction for sequential reading."""
-    if not include_body:
-        return None
-
-    body = getattr(note, "body", "")
-    if not body:
-        return None
-
-    lines = body.split("\n")
-    total_lines = len(lines)
-
-    # Validate start_line (1-based)
-    if start_line < 1 or start_line > total_lines:
-        return f"""LINE_EXTRACTION_ERROR: Invalid start_line
-NOTE_ID: {note_id}
-NOTE_TITLE: {getattr(note, 'title', 'Untitled')}
-START_LINE: {start_line}
-TOTAL_LINES: {total_lines}
-ERROR: start_line must be between 1 and {total_lines}"""
-
-    # Determine end line
-    if line_count is not None:
-        if line_count < 1:
-            return f"""LINE_EXTRACTION_ERROR: Invalid line_count
-NOTE_ID: {note_id}
-LINE_COUNT: {line_count}
-ERROR: line_count must be >= 1"""
-        actual_end_line = min(start_line + line_count - 1, total_lines)
-    else:
-        # Default to 50 lines if line_count not specified
-        actual_end_line = min(start_line + 49, total_lines)
-
-    # Extract lines (convert to 0-based indexing)
-    start_idx = start_line - 1
-    end_idx = actual_end_line  # end_line is inclusive, so we don't subtract 1
-    extracted_lines = lines[start_idx:end_idx]
-    extracted_content = "\n".join(extracted_lines)
-
-    # Create modified note with extracted content
-    modified_note = _create_note_object(note, extracted_content)
-    result = format_note_details(
-        modified_note, include_body, "individual_notes", original_body=body
-    )
-
-    # Add extraction metadata
-    lines_extracted = len(extracted_lines)
-    next_line = actual_end_line + 1 if actual_end_line < total_lines else None
-
-    extraction_info = f"""EXTRACTED_LINES: {start_line}-{actual_end_line} ({lines_extracted} lines)
-TOTAL_LINES: {total_lines}
-EXTRACTION_TYPE: sequential_reading"""
-
-    if next_line:
-        extraction_info += f'\nNEXT_CHUNK: get_note("{note_id}", start_line={next_line}) for continuation'
-    else:
-        extraction_info += "\nSTATUS: End of note reached"
-
-    return f"{extraction_info}\n\n{result}"
-
-
-def _handle_smart_toc_behavior(note: Any, note_id: str, config: Any) -> Optional[str]:
-    """Handle smart TOC behavior for long notes."""
-    if not config.is_smart_toc_enabled():
-        return None
-
-    body = getattr(note, "body", "")
-    if not body:
-        return None
-
-    body_length = len(body)
-    toc_threshold = config.get_smart_toc_threshold()
-
-    if body_length <= toc_threshold:
-        return None  # Not long enough for smart TOC
-
-    # Try TOC first
-    toc_result = _handle_toc_display(note, note_id, "smart_toc_auto", body)
-    if toc_result:
-        return toc_result
-
-    # No headings found - show truncated content with warning
-    truncated_content = body[:toc_threshold] + (
-        "..." if body_length > toc_threshold else ""
-    )
-    truncated_note = _create_note_object(note, truncated_content)
-    result = format_note_details(
-        truncated_note, True, "individual_notes", original_body=body
-    )
-
-    truncation_info = f'CONTENT_TRUNCATED: Note is long ({body_length} chars) but has no headings for navigation\nNEXT_STEPS: To force full content: get_note("{note_id}", force_full=True) or start sequential reading: get_note("{note_id}", start_line=1)\n'
-    return f"{truncation_info}{result}"
-
-
-def _build_find_in_note_header(
-    note: Any,
-    pattern: str,
-    flags_str: str,
-    limit: int,
-    offset: int,
-    total_count: int,
-    showing_count: int,
-    *,
-    notebook_path_override: Optional[str] = None,
-    status: Optional[str] = None,
-) -> List[str]:
-    """Build the standardized header for find_in_note output."""
-    from joplin_mcp.fastmcp_server import _collect_note_metadata
-
-    metadata = _collect_note_metadata(
-        note,
-        include_timestamps=False,
-        include_todo=False,
-        include_content_stats=False,
-        notebook_path_override=notebook_path_override,
-        default_notebook_id_if_missing="unknown",
-    )
-
-    parts = ["ITEM_TYPE: note_match"]
-    parts.extend(format_note_metadata_lines(metadata, style="upper"))
-
-    parts.extend(
-        [
-            f"PATTERN: {pattern}",
-            f"FLAGS: {flags_str}",
-            f"TOTAL_MATCHES: {total_count}",
-        ]
-    )
-
-    if status:
-        parts.append(status)
-
-    parts.extend(
-        [
-            "",
-            format_find_in_note_summary(
-                limit, offset, total_count, showing_count
-            ),
-        ]
-    )
-
-    return parts
+    return " ".join(criteria_parts)
 
 
 def format_no_results_with_pagination(
@@ -422,44 +179,150 @@ async def get_note(
 
     client = get_joplin_client()
 
-    # For sequential reading, use cache to avoid re-fetching
+    # For sequential reading, use the view-module cache to avoid re-fetching.
     if start_line is not None and include_body:
-        note = _get_cached_note(note_id)
+        note = note_view.get_cached_note(note_id)
         if note is None:
             note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
-            _set_cached_note(note_id, note)
+            note_view.set_cached_note(note_id, note)
     else:
         note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
 
-    # Handle line extraction first (for sequential reading)
-    if start_line is not None:
-        line_result = _handle_line_extraction(
-            note, start_line, line_count, note_id, include_body
+    if get_config().has_notebook_allowlist:
+        parent_id = getattr(note, 'parent_id', '')
+        validate_notebook_access(parent_id, allowlist_entries=get_config().notebook_allowlist)
+
+    return note_view.render_note(
+        note,
+        note_id=note_id,
+        section=section,
+        start_line=start_line,
+        line_count=line_count,
+        toc_only=toc_only,
+        force_full=force_full,
+        include_body=include_body,
+        config=get_config(),
+    )
+
+
+# Joplin's ocr_status integer values, mapped to readable labels.
+# Source: Joplin's BaseItem model. 0=none, 1=pending, 2=done, 3=error.
+_OCR_STATUS_LABELS = {
+    0: "none",
+    1: "pending",
+    2: "done",
+    3: "error",
+}
+
+
+@create_tool("get_note_resources", "Get note resources")
+async def get_note_resources(
+    note_id: Annotated[
+        JoplinIdType, Field(description="Note ID whose resources to list")
+    ],
+    ocr_only: Annotated[
+        OptionalBoolType,
+        Field(description="Return only resources with non-empty OCR text (default: False)"),
+    ] = False,
+) -> str:
+    """List resources attached to a note, including OCR text for images and PDFs.
+
+    Joplin runs OCR on attached images and PDFs and stores the result on each
+    resource. This tool exposes that text so an agent reading a note can also
+    see what's inside its images. Resources without OCR text (audio, plain
+    files, or images not yet OCRed) are still listed unless ``ocr_only=True``.
+
+    Args:
+        note_id: Note identifier.
+        ocr_only: If True, omit resources whose OCR text is empty/whitespace.
+
+    Returns:
+        Formatted listing with per-resource metadata (id, title, mime,
+        ocr_status) and full OCR text where available.
+
+    Examples:
+        get_note_resources("id") - list all resources on the note
+        get_note_resources("id", ocr_only=True) - only resources with OCR text
+    """
+    note_id = validate_joplin_id(note_id)
+    ocr_only = flexible_bool_converter(ocr_only)
+
+    client = get_joplin_client()
+
+    if get_config().has_notebook_allowlist:
+        parent_id = getattr(
+            client.get_note(note_id, fields="id,parent_id"), "parent_id", ""
         )
-        if line_result:
-            return line_result
+        validate_notebook_access(
+            parent_id, allowlist_entries=get_config().notebook_allowlist
+        )
 
-    # Handle section extraction second
-    section_result = _handle_section_extraction(note, section, note_id, include_body)
-    if section_result:
-        return section_result
+    resources: List[Any] = []
+    page = 1
+    while True:
+        page_result = client.get_resources(
+            note_id=note_id,
+            fields="id,title,mime,ocr_text,ocr_status",
+            page=page,
+            limit=100,
+        )
+        resources.extend(page_result.items)
+        if not page_result.has_more:
+            break
+        page += 1
 
-    # Handle explicit TOC-only mode
-    if toc_only and include_body:
-        body = getattr(note, "body", "")
-        if body:
-            toc_result = _handle_toc_display(note, note_id, "toc_only", body)
-            if toc_result:
-                return toc_result
+    # Deterministic ordering across calls and devices.
+    resources.sort(key=lambda r: getattr(r, "id", "") or "")
 
-    # Handle smart TOC behavior (only if not forcing full content)
-    if include_body and not force_full:
-        smart_toc_result = _handle_smart_toc_behavior(note, note_id, _module_config)
-        if smart_toc_result:
-            return smart_toc_result
+    total_resources = len(resources)
+    with_ocr = [
+        r for r in resources
+        if (getattr(r, "ocr_text", "") or "").strip()
+    ]
+    total_with_ocr = len(with_ocr)
 
-    # Default: return full note details
-    return format_note_details(note, include_body, "individual_notes")
+    listed = with_ocr if ocr_only else resources
+
+    header = [
+        f"NOTE_ID: {note_id}",
+        f"TOTAL_RESOURCES: {total_resources}",
+        f"RESOURCES_WITH_OCR_TEXT: {total_with_ocr}",
+        "",
+    ]
+
+    if not listed:
+        if ocr_only and total_resources > 0:
+            header.append(
+                f"RESOURCES: None with OCR text "
+                f"({total_resources} resource(s) attached but none have OCR text yet)"
+            )
+        else:
+            header.append("RESOURCES: None")
+        return "\n".join(header)
+
+    header.append("RESOURCES:")
+    for idx, resource in enumerate(listed, 1):
+        rid = getattr(resource, "id", "") or ""
+        title = getattr(resource, "title", "") or "Untitled"
+        mime = getattr(resource, "mime", "") or "unknown"
+        status_raw = getattr(resource, "ocr_status", None)
+        status_label = _OCR_STATUS_LABELS.get(status_raw, "unknown")
+        ocr_text = (getattr(resource, "ocr_text", "") or "").strip()
+
+        header.append(f"  RESOURCE_{idx}:")
+        header.append(f"    resource_id: {rid}")
+        header.append(f"    title: {title}")
+        header.append(f"    mime: {mime}")
+        header.append(f"    ocr_status: {status_label}")
+        if ocr_text:
+            header.append("    ocr_text: |")
+            for line in ocr_text.splitlines():
+                header.append(f"      {line}")
+        else:
+            header.append("    ocr_text: (none)")
+        header.append("")
+
+    return "\n".join(header).rstrip()
 
 
 @create_tool("get_links", "Get links")
@@ -491,6 +354,11 @@ async def get_links(
     # Get the note
     note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
 
+    # Allowlist validation: ensure source note is in an accessible notebook
+    if get_config().has_notebook_allowlist:
+        source_parent_id = getattr(note, 'parent_id', '')
+        validate_notebook_access(source_parent_id, allowlist_entries=get_config().notebook_allowlist)
+
     note_title = getattr(note, "title", "Untitled")
     body = getattr(note, "body", "")
 
@@ -509,12 +377,22 @@ async def get_links(
 
                 # Try to get the target note title
                 try:
-                    target_note = client.get_note(target_note_id, fields="id,title")
+                    target_note = client.get_note(target_note_id, fields="id,title,parent_id")
                     target_title = getattr(target_note, "title", "Unknown Note")
                     target_exists = True
                 except Exception:
                     target_title = "Note not found"
                     target_exists = False
+                    target_note = None
+
+                # Allowlist filtering: skip linked notes in non-accessible notebooks
+                if get_config().has_notebook_allowlist and target_note is not None:
+                    target_parent_id = getattr(target_note, 'parent_id', '')
+                    if not is_notebook_accessible(
+                        target_parent_id,
+                        allowlist_entries=get_config().notebook_allowlist
+                    ):
+                        continue
 
                 link_data = {
                     "text": link_text,
@@ -543,6 +421,13 @@ async def get_links(
             query=search_query, fields=COMMON_NOTE_FIELDS
         )
         backlink_notes = process_search_results(backlink_results)
+
+        # Allowlist filtering: only include backlinks from accessible notebooks
+        if get_config().has_notebook_allowlist:
+            backlink_notes = [n for n in backlink_notes if is_notebook_accessible(
+                getattr(n, 'parent_id', ''),
+                allowlist_entries=get_config().notebook_allowlist
+            )]
 
         # Filter out the current note and parse backlinks
         for source_note in backlink_notes:
@@ -712,6 +597,10 @@ async def create_note(
     # Use helper function to get notebook ID
     parent_id = get_notebook_id_by_name(notebook_name)
 
+    # Allowlist validation: ensure target notebook is accessible
+    if get_config().has_notebook_allowlist:
+        validate_notebook_access(parent_id, allowlist_entries=get_config().notebook_allowlist)
+
     client = get_joplin_client()
     note_kwargs = {
         "title": title,
@@ -730,8 +619,14 @@ async def create_note(
 @create_tool("update_note", "Update note")
 async def update_note(
     note_id: Annotated[JoplinIdType, Field(description="Note ID to update")],
-    title: Annotated[Optional[str], Field(description="New title (optional)")] = None,
+    title: Annotated[
+        Optional[str], Field(description="New title (optional)", min_length=1)
+    ] = None,
     body: Annotated[Optional[str], Field(description="New content (optional)")] = None,
+    notebook_name: Annotated[
+        Optional[str],
+        Field(description="Move note to this notebook by name or path (e.g., 'Work' or 'Projects/Work/Tasks')")
+    ] = None,
     is_todo: Annotated[
         OptionalBoolType, Field(description="Convert to/from todo (optional)")
     ] = None,
@@ -744,10 +639,15 @@ async def update_note(
         Field(description="Due date: Unix timestamp (ms), ISO 8601 string, or 0 to clear. Only for todos.")
     ] = None,
 ) -> str:
-    """Update note properties (title, body, todo status, due date). Replaces the entire body.
+    """Update note properties (title, body, todo status, due date) or move a note to another notebook. Replaces the entire body.
 
-    Use this for metadata changes or full body replacement. For targeted text edits
-    (fix a word, append a line) use edit_note instead — it doesn't require reading first.
+    Use this for metadata changes, moving a note between notebooks, or full body
+    replacement. For targeted text edits (fix a word, append a line) use edit_note
+    instead — it doesn't require reading first.
+
+    Notebook can be specified by name or path:
+    - "Work" - matches notebook named "Work" (must be unique)
+    - "Projects/Work" - matches "Work" notebook inside "Projects"
 
     Returns:
         str: Success message confirming the note was updated.
@@ -755,6 +655,8 @@ async def update_note(
     Examples:
         - update_note("note123", title="New Title") - Update only the title
         - update_note("note123", body="New content", is_todo=True) - Update content and convert to todo
+        - update_note("note123", notebook_name="Archive") - Move note to the "Archive" notebook
+        - update_note("note123", notebook_name="Projects/Work/Tasks") - Move to a sub-notebook by path
         - update_note("note123", todo_due="2024-12-31T17:00:00") - Set due date
         - update_note("note123", todo_due=0) - Clear due date
     """
@@ -769,6 +671,8 @@ async def update_note(
         update_data["title"] = title
     if body is not None:
         update_data["body"] = body
+    if notebook_name is not None:
+        update_data["parent_id"] = get_notebook_id_by_name(notebook_name)
     if is_todo is not None:
         update_data["is_todo"] = 1 if is_todo else 0
     if todo_completed is not None:
@@ -786,17 +690,28 @@ async def update_note(
 
     client = get_joplin_client()
 
-    # Auto-backup revision before overwriting title or body
+    # Allowlist validation: source must be accessible, and if moving, destination too.
+    if get_config().has_notebook_allowlist:
+        note = client.get_note(note_id, fields="id,parent_id")
+        parent_id_check = getattr(note, 'parent_id', '')
+        validate_notebook_access(parent_id_check, allowlist_entries=get_config().notebook_allowlist)
+        if "parent_id" in update_data:
+            validate_notebook_access(
+                update_data["parent_id"],
+                allowlist_entries=get_config().notebook_allowlist,
+            )
+
+    # Auto-backup revision before overwriting title or body. Runs after the
+    # allowlist check so a denied note is never read into a revision.
     if "title" in update_data or "body" in update_data:
         try:
             save_note_revision(client, note_id)
         except Exception:
             pass  # Best-effort backup — don't block the update
 
-    client.modify_note(note_id, **update_data)
-    _clear_note_cache()
+    note_view.modify_note(client, note_id, **update_data)
 
-    result = format_update_success(ItemType.note, note_id)
+    result = format_update_success(ItemType.note, note_id, title=title)
     if warning_msg:
         result += f"\nWARNING: {warning_msg}"
     return result
@@ -873,6 +788,12 @@ async def edit_note(
 
     client = get_joplin_client()
     note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
+
+    # Allowlist validation: ensure note is in an accessible notebook
+    if get_config().has_notebook_allowlist:
+        parent_id = getattr(note, 'parent_id', '')
+        validate_notebook_access(parent_id, allowlist_entries=get_config().notebook_allowlist)
+
     body = getattr(note, "body", "") or ""
 
     # Auto-backup revision before modifying body
@@ -880,6 +801,13 @@ async def edit_note(
         save_note_revision(client, note_id)
     except Exception:
         pass  # Best-effort backup — don't block the edit
+
+    # edit_note already fetched the note, so naming it in the response costs
+    # nothing. Omitted when the note has no title, mirroring the rule in
+    # format_update_success: never invent a placeholder.
+    note_title = (getattr(note, "title", "") or "").strip().replace('"', "'")
+    in_note = f' in "{note_title}"' if note_title else ""
+    to_note = f' to "{note_title}"' if note_title else ""
 
     if old_string is not None:
         # Replacement / deletion mode
@@ -907,12 +835,11 @@ async def edit_note(
             new_body = body.replace(old_string, new_string, 1)
             replacements = 1
 
-        client.modify_note(note_id, body=new_body)
-        _clear_note_cache()
+        note_view.modify_note(client, note_id, body=new_body)
 
         if new_string == "":
-            return f"EDIT_NOTE: Deleted {replacements} occurrence(s) of the specified text."
-        return f"EDIT_NOTE: Replaced {replacements} occurrence(s)."
+            return f"EDIT_NOTE: Deleted {replacements} occurrence(s) of the specified text{in_note}."
+        return f"EDIT_NOTE: Replaced {replacements} occurrence(s){in_note}."
 
     else:
         # Positional insertion mode
@@ -923,10 +850,9 @@ async def edit_note(
             new_body = new_string + body
             action = "Prepended"
 
-        client.modify_note(note_id, body=new_body)
-        _clear_note_cache()
+        note_view.modify_note(client, note_id, body=new_body)
 
-        return f"EDIT_NOTE: {action} {len(new_string)} characters."
+        return f"EDIT_NOTE: {action} {len(new_string)} characters{to_note}."
 
 
 @create_tool("delete_note", "Delete note")
@@ -935,20 +861,31 @@ async def delete_note(
 ) -> str:
     """Delete a note from Joplin (moves to trash).
 
-    Moves a note to Joplin's trash. The note can be recovered using list_trash
-    and restore_from_trash, or via Joplin Desktop's trash interface.
+    Soft-deletes a note by moving it to Joplin's trash. The note can be
+    found with find_notes("*", trash=True) and restored with
+    restore_from_trash(). This action is reversible (unlike delete_tag,
+    which is permanent).
 
     Returns:
         str: Success message confirming the note was moved to trash.
+
+    Raises:
+        ValueError: if the note ID does not exist.
     """
     # Runtime validation for Jan AI compatibility while preserving functionality
     note_id = validate_joplin_id(note_id)
 
     client = get_joplin_client()
-    client.delete_note(note_id)
 
-    # Invalidate cache for deleted note
-    _clear_note_cache()
+    # GET first so a missing note ID 404s instead of silent-succeeding through
+    # Joplin's idempotent DELETE (same shape as delete_notebook). The fetch
+    # doubles as the allowlist check below when applicable.
+    note = client.get_note(note_id, fields="id,parent_id")
+    if get_config().has_notebook_allowlist:
+        parent_id = getattr(note, 'parent_id', '')
+        validate_notebook_access(parent_id, allowlist_entries=get_config().notebook_allowlist)
+
+    note_view.delete_note(client, note_id)
 
     return format_delete_success(ItemType.note, note_id)
 
@@ -969,6 +906,10 @@ async def find_notes(
         OptionalBoolType,
         Field(description="Filter by completion status (default: None)"),
     ] = None,
+    trash: Annotated[
+        OptionalBoolType,
+        Field(description="Show trashed (soft-deleted) notes instead of active notes (default: None/False)"),
+    ] = None,
     order_by: Annotated[
         OptionalSortByType,
         Field(description='Sort field: "title", "created_time", "updated_time" (default: updated_time for *, relevance for text)'),
@@ -986,16 +927,37 @@ async def find_notes(
         - find_notes("*") - List all notes
         - find_notes("meeting") - Find notes containing "meeting"
         - find_notes("*", task=True) - List all tasks
+        - find_notes("*", trash=True) - List trashed (soft-deleted) notes
         - find_notes("*", limit=20, offset=20) - Page 2
 
     TIP: Use find_notes_with_tag() or find_notes_in_notebook() for filtered searches.
+    TIP: Trashed notes can be restored with restore_from_trash().
+
+    IMPORTANT: trash=True only works with query="*" and no task/completed filters.
+    Joplin's search API does not index trashed notes and ignores include_deleted
+    for filter queries.
     """
 
     # Runtime validation for Jan AI compatibility while preserving functionality
     task = flexible_bool_converter(task)
     completed = flexible_bool_converter(completed)
+    trash = flexible_bool_converter(trash)
     order_by = flexible_enum_converter(order_by, SortBy, "order_by")
     order_dir = flexible_enum_converter(order_dir, SortOrder, "order_dir")
+
+    # trash=True only works with query="*" and no task/completed filters.
+    # Joplin's search API and filter queries ignore include_deleted entirely.
+    if trash:
+        if query.strip() != "*":
+            raise ValueError(
+                'trash=True only works with query="*". '
+                "Joplin's search API does not index trashed notes."
+            )
+        if task is not None or completed is not None:
+            raise ValueError(
+                "trash=True cannot be combined with task or completed filters. "
+                "Joplin's search API ignores include_deleted for filter queries."
+            )
 
     client = get_joplin_client()
 
@@ -1014,9 +976,12 @@ async def find_notes(
             )
             notes = process_search_results(results)
         else:
-            # No filters, get all notes
+            # No filters, get all notes (include trashed if requested)
+            get_all_kwargs = dict(sort_kwargs)
+            if trash:
+                get_all_kwargs["include_deleted"] = 1
             results = client.get_all_notes(
-                fields=COMMON_NOTE_FIELDS, **sort_kwargs
+                fields=COMMON_NOTE_FIELDS, **get_all_kwargs,
             )
             notes = process_search_results(results)
     else:
@@ -1038,13 +1003,26 @@ async def find_notes(
         )
         notes = process_search_results(results)
 
+    # Post-filter for trash: keep only trashed notes
+    # (joppy converts deleted_time=0 to None, so truthy check is sufficient)
+    if trash:
+        notes = [n for n in notes if getattr(n, "deleted_time", None)]
+
+    # Allowlist filtering: only include notes in accessible notebooks
+    if get_config().has_notebook_allowlist:
+        notes = [n for n in notes if is_notebook_accessible(
+            getattr(n, 'parent_id', ''),
+            allowlist_entries=get_config().notebook_allowlist
+        )]
+
     # Apply pagination
-    paginated_notes, total_count = apply_pagination(notes, limit, offset)
+    total_count = len(notes)
+    paginated_notes = notes[offset : offset + limit]
 
     if not paginated_notes:
         # Create descriptive message based on search criteria
         if query.strip() == "*":
-            base_criteria = "(all notes)"
+            base_criteria = "(all trashed notes)" if trash else "(all notes)"
         else:
             base_criteria = f'containing "{query}"'
 
@@ -1053,7 +1031,7 @@ async def find_notes(
 
     # Format results with pagination info
     if query.strip() == "*":
-        search_description = "all notes"
+        search_description = "all trashed notes" if trash else "all notes"
         sort_kwargs_for_display = resolve_sort_params(order_by, order_dir)
     else:
         search_description = f"text search: {query}"
@@ -1071,6 +1049,7 @@ async def find_notes(
         original_query=query,
         order_by=sort_kwargs_for_display.get("order_by"),
         order_dir=sort_kwargs_for_display.get("order_dir"),
+        config=get_config(),
     )
 
 
@@ -1139,6 +1118,11 @@ async def find_in_note(
     client = get_joplin_client()
     note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
 
+    # Allowlist validation: ensure note is in an accessible notebook
+    if get_config().has_notebook_allowlist:
+        parent_id = getattr(note, 'parent_id', '')
+        validate_notebook_access(parent_id, allowlist_entries=get_config().notebook_allowlist)
+
     body = getattr(note, "body", "") or ""
 
     flags_str = ", ".join(applied_flags) if applied_flags else "none"
@@ -1164,7 +1148,6 @@ async def find_in_note(
             notebook_path_override=notebook_path,
             status="STATUS: Note has no content to search",
         )
-        header_parts.extend(build_pagination_summary(0, limit, offset))
         return "\n".join(header_parts)
 
     # Split once to derive both offsets and display lines
@@ -1245,7 +1228,6 @@ async def find_in_note(
             notebook_path_override=notebook_path,
             status="STATUS: No matches found",
         )
-        result_parts.extend(build_pagination_summary(0, limit, offset))
         return "\n".join(result_parts)
 
     match_entries: List[Dict[str, Any]] = []
@@ -1265,7 +1247,8 @@ async def find_in_note(
             }
         )
 
-    paginated_matches, total_count = apply_pagination(match_entries, limit, offset)
+    total_count = len(match_entries)
+    paginated_matches = match_entries[offset : offset + limit]
 
     result_parts = _build_find_in_note_header(
         note,
@@ -1282,7 +1265,6 @@ async def find_in_note(
         result_parts.append(
             f"STATUS: No matches available for offset {offset} with limit {limit}"
         )
-        result_parts.extend(build_pagination_summary(total_count, limit, offset))
         return "\n".join(result_parts)
 
     for page_index, match_info in enumerate(paginated_matches, start=1):
@@ -1296,7 +1278,6 @@ async def find_in_note(
 
         result_parts.append("")
 
-    result_parts.extend(build_pagination_summary(total_count, limit, offset))
 
     return "\n".join(result_parts)
 
@@ -1360,8 +1341,16 @@ async def find_notes_with_tag(
     )
     notes = process_search_results(results)
 
+    # Allowlist filtering: only include notes in accessible notebooks
+    if get_config().has_notebook_allowlist:
+        notes = [n for n in notes if is_notebook_accessible(
+            getattr(n, 'parent_id', ''),
+            allowlist_entries=get_config().notebook_allowlist
+        )]
+
     # Apply pagination
-    paginated_notes, total_count = apply_pagination(notes, limit, offset)
+    total_count = len(notes)
+    paginated_notes = notes[offset : offset + limit]
 
     if not paginated_notes:
         base_criteria = f'with tag "{tag_name}"'
@@ -1378,6 +1367,7 @@ async def find_notes_with_tag(
         original_query=tag_name,
         order_by=sort_kwargs.get("order_by"),
         order_dir=sort_kwargs.get("order_dir"),
+        config=get_config(),
     )
 
 
@@ -1440,6 +1430,10 @@ async def find_notes_in_notebook(
     # Resolve notebook name/path to ID (ensures exact match)
     notebook_id = get_notebook_id_by_name(notebook_name)
 
+    # Allowlist validation: ensure notebook is accessible
+    if get_config().has_notebook_allowlist:
+        validate_notebook_access(notebook_id, allowlist_entries=get_config().notebook_allowlist)
+
     # Fetch notes by notebook_id for precision (search API can't distinguish same-named notebooks)
     client = get_joplin_client()
     results = client.get_all_notes(
@@ -1457,7 +1451,8 @@ async def find_notes_in_notebook(
     search_query = f'notebook:"{notebook_name}"'
 
     # Apply pagination
-    paginated_notes, total_count = apply_pagination(notes, limit, offset)
+    total_count = len(notes)
+    paginated_notes = notes[offset : offset + limit]
 
     if not paginated_notes:
         base_criteria = f'in notebook "{notebook_name}"'
@@ -1474,6 +1469,7 @@ async def find_notes_in_notebook(
         original_query=notebook_name,
         order_by=sort_kwargs.get("order_by"),
         order_dir=sort_kwargs.get("order_dir"),
+        config=get_config(),
     )
 
 
@@ -1512,6 +1508,13 @@ async def get_all_notes(
     results = client.get_all_notes(fields=COMMON_NOTE_FIELDS, **sort_kwargs)
     notes = process_search_results(results)
 
+    # Allowlist filtering: only include notes in accessible notebooks
+    if get_config().has_notebook_allowlist:
+        notes = [n for n in notes if is_notebook_accessible(
+            getattr(n, 'parent_id', ''),
+            allowlist_entries=get_config().notebook_allowlist
+        )]
+
     # Apply limit (using consistent pattern but keeping simple offset=0)
     notes = notes[:limit]
 
@@ -1522,4 +1525,5 @@ async def get_all_notes(
         "all notes", notes, len(notes), limit, 0, "search_results",
         order_by=sort_kwargs.get("order_by"),
         order_dir=sort_kwargs.get("order_dir"),
+        config=get_config(),
     )

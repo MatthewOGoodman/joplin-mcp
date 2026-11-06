@@ -1,0 +1,597 @@
+"""Tests for notebook tool allowlist enforcement.
+
+These tests patch ``notebook_resolver`` (imported into ``tools.notebooks``)
+so we can verify the tool delegates allowlist checks and mutations to the
+resolver. Cache invalidation isn't asserted here — the resolver mutation
+methods handle it internally and that's covered in resolver-level tests.
+"""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+def _get_tool_fn(tool):
+    """Get the underlying function from a tool (handles both wrapped and unwrapped)."""
+    if hasattr(tool, "fn"):
+        return tool.fn
+    return tool
+
+
+# === Fixtures ===
+
+
+@pytest.fixture
+def mock_allowlist_config():
+    """Enable an allowlist on the live config for the test body."""
+    from joplin_mcp.config import get_config, set_config
+
+    snapshot = get_config()
+    set_config(snapshot.copy(notebook_allowlist=["AI", "Projects/*"]))
+    try:
+        yield get_config()
+    finally:
+        set_config(snapshot)
+
+
+@pytest.fixture
+def mock_no_allowlist_config():
+    """Explicit no-allowlist fixture for backward-compat tests.
+
+    The autouse _no_notebook_allowlist already gives this state; this
+    fixture exists so tests can request it by name for readability.
+    """
+    from joplin_mcp.config import get_config
+
+    yield get_config()
+
+
+# === Tests for list_notebooks with allowlist ===
+
+
+class TestListNotebooksAllowlist:
+    """Tests for list_notebooks allowlist filtering."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.format_item_list")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_list_notebooks_no_allowlist(
+        self, mock_get_client, mock_format, mock_no_allowlist_config
+    ):
+        """All notebooks returned when no allowlist configured."""
+        from joplin_mcp.tools.notebooks import list_notebooks
+
+        mock_notebooks = [
+            MagicMock(id="nb1", title="Work"),
+            MagicMock(id="nb2", title="Personal"),
+        ]
+        mock_client = MagicMock()
+        mock_client.get_all_notebooks.return_value = mock_notebooks
+        mock_get_client.return_value = mock_client
+        mock_format.return_value = "ALL_NOTEBOOKS"
+
+        fn = _get_tool_fn(list_notebooks)
+        result = await fn()
+
+        # filter_accessible should NOT be called
+        from joplin_mcp.fastmcp_server import ItemType
+
+        mock_format.assert_called_once()
+        assert mock_format.call_args[0] == (mock_notebooks, ItemType.notebook)
+        assert result == "ALL_NOTEBOOKS"
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    @patch("joplin_mcp.tools.notebooks.format_item_list")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_list_notebooks_with_allowlist(
+        self,
+        mock_get_client,
+        mock_format,
+        mock_resolver,
+        mock_allowlist_config,
+    ):
+        """Only matching notebooks returned when allowlist configured."""
+        from joplin_mcp.tools.notebooks import list_notebooks
+
+        all_notebooks = [
+            MagicMock(id="nb1", title="AI"),
+            MagicMock(id="nb2", title="Personal"),
+            MagicMock(id="nb3", title="Projects"),
+        ]
+        filtered = [all_notebooks[0], all_notebooks[2]]
+
+        mock_client = MagicMock()
+        mock_client.get_all_notebooks.return_value = all_notebooks
+        mock_get_client.return_value = mock_client
+        mock_resolver.filter_accessible.return_value = filtered
+        mock_format.return_value = "FILTERED_NOTEBOOKS"
+
+        fn = _get_tool_fn(list_notebooks)
+        result = await fn()
+
+        mock_resolver.filter_accessible.assert_called_once_with(
+            all_notebooks,
+            allowlist_entries=mock_allowlist_config.notebook_allowlist,
+        )
+        from joplin_mcp.fastmcp_server import ItemType
+
+        mock_format.assert_called_once()
+        assert mock_format.call_args[0] == (filtered, ItemType.notebook)
+        assert result == "FILTERED_NOTEBOOKS"
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.format_item_list")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_list_notebooks_no_allowlist_returns_all(
+        self, mock_get_client, mock_format, override_config
+    ):
+        """All notebooks returned when no allowlist is configured.
+
+        Originally written as `notebook_allowlist=[]` ("same as none"), but
+        on a real config `[]` means deny-all. The MagicMock pattern hid
+        the divergence. Empty-list (deny-all) semantics are tracked in
+        issue #46 for separate coverage.
+        """
+        with override_config(notebook_allowlist=None):
+            from joplin_mcp.tools.notebooks import list_notebooks
+
+            mock_notebooks = [MagicMock(id="nb1", title="Work")]
+            mock_client = MagicMock()
+            mock_client.get_all_notebooks.return_value = mock_notebooks
+            mock_get_client.return_value = mock_client
+            mock_format.return_value = "ALL"
+
+            fn = _get_tool_fn(list_notebooks)
+            result = await fn()
+
+            from joplin_mcp.fastmcp_server import ItemType
+
+            mock_format.assert_called_once()
+            assert mock_format.call_args[0] == (mock_notebooks, ItemType.notebook)
+            assert result == "ALL"
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    @patch("joplin_mcp.tools.notebooks.format_item_list")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_list_notebooks_empty_allowlist_returns_none(
+        self, mock_get_client, mock_format, mock_resolver, override_config
+    ):
+        """notebook_allowlist=[] means deny-all: no notebooks returned (closes #46)."""
+        with override_config(notebook_allowlist=[]):
+            from joplin_mcp.tools.notebooks import list_notebooks
+
+            all_notebooks = [
+                MagicMock(id="nb1", title="Work"),
+                MagicMock(id="nb2", title="Personal"),
+            ]
+            mock_client = MagicMock()
+            mock_client.get_all_notebooks.return_value = all_notebooks
+            mock_get_client.return_value = mock_client
+            mock_resolver.filter_accessible.return_value = []
+            mock_format.return_value = "EMPTY"
+
+            fn = _get_tool_fn(list_notebooks)
+            result = await fn()
+
+            # The resolver is asked to filter with an empty allowlist and
+            # returns [] (deny-all), which the tool then formats.
+            mock_resolver.filter_accessible.assert_called_once_with(
+                all_notebooks, allowlist_entries=[]
+            )
+            from joplin_mcp.fastmcp_server import ItemType
+
+            mock_format.assert_called_once()
+            assert mock_format.call_args[0] == ([], ItemType.notebook)
+            assert result == "EMPTY"
+
+
+# === Tests for create_notebook with allowlist ===
+
+
+class TestCreateNotebookAllowlist:
+    """Tests for create_notebook allowlist validation."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_create_notebook_allowlisted_parent(
+        self,
+        mock_resolver,
+        mock_resolve,
+        mock_allowlist_config,
+    ):
+        """Should succeed when resolved parent notebook is allowlisted."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        resolved_id = "12345678901234567890123456789012"
+        mock_resolve.return_value = resolved_id
+        mock_resolver.add_notebook.return_value = "new_nb_id"
+
+        fn = _get_tool_fn(create_notebook)
+        result = await fn(title="Sub Notebook", parent_name="AI")
+
+        mock_resolve.assert_called_once_with("AI")
+        mock_resolver.validate_access.assert_called_once_with(
+            resolved_id,
+            allowlist_entries=mock_allowlist_config.notebook_allowlist,
+        )
+        mock_resolver.add_notebook.assert_called_once()
+        assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_create_notebook_non_allowlisted_parent(
+        self,
+        mock_resolver,
+        mock_resolve,
+        mock_allowlist_config,
+    ):
+        """Should raise error when resolved parent notebook is not allowlisted."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolve.return_value = "12345678901234567890123456789012"
+        mock_resolver.validate_access.side_effect = ValueError(
+            "Notebook not accessible"
+        )
+
+        fn = _get_tool_fn(create_notebook)
+        with pytest.raises(ValueError, match="Notebook not accessible"):
+            await fn(title="Bad Notebook", parent_name="Personal")
+
+        # Validation should be attempted but the write must not happen
+        mock_resolver.validate_access.assert_called_once()
+        mock_resolver.add_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_create_notebook_rejects_ancestor_of_allowlisted(
+        self,
+        mock_resolver,
+        mock_resolve,
+        mock_allowlist_config,
+    ):
+        """Defence-in-depth: an ancestor of an allowlisted notebook is in
+        get_accessible_map (so name resolution succeeds) but isn't itself
+        accessible. The tool's own validate_access must reject it -- otherwise
+        an agent could widen its reach by creating under the bare ancestor of
+        an allowlisted path. Regression guard for the defence-in-depth call."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        # Resolver succeeds (ancestor is in the filtered map).
+        mock_resolve.return_value = "ancestor_id_00000000000000000000"
+        # validate_access then rejects the bare ancestor.
+        mock_resolver.validate_access.side_effect = ValueError(
+            "Notebook not accessible"
+        )
+
+        fn = _get_tool_fn(create_notebook)
+        with pytest.raises(ValueError, match="Notebook not accessible"):
+            await fn(title="Sneaky", parent_name="Projects")
+
+        mock_resolver.validate_access.assert_called_once_with(
+            "ancestor_id_00000000000000000000",
+            allowlist_entries=mock_allowlist_config.notebook_allowlist,
+        )
+        mock_resolver.add_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_create_notebook_no_parent_no_allowlist(
+        self,
+        mock_resolver,
+        mock_no_allowlist_config,
+    ):
+        """Top-level notebook creation succeeds when no allowlist configured."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolver.add_notebook.return_value = "top_nb_id"
+
+        fn = _get_tool_fn(create_notebook)
+        result = await fn(title="Top Level")
+
+        mock_resolver.add_notebook.assert_called_once_with(title="Top Level")
+        assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    async def test_create_notebook_no_parent_with_allowlist_blocked(
+        self,
+        mock_allowlist_config,
+    ):
+        """Top-level notebook creation blocked when allowlist is active (no bypass)."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        fn = _get_tool_fn(create_notebook)
+        with pytest.raises(ValueError, match="Notebook not accessible"):
+            await fn(title="Rogue Top Level")
+
+
+# === Tests for update_notebook with allowlist ===
+
+
+class TestUpdateNotebookAllowlist:
+    """Tests for update_notebook allowlist validation."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_update_notebook_allowlisted(
+        self,
+        mock_resolver,
+        mock_allowlist_config,
+    ):
+        """Should succeed when notebook is allowlisted."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        fn = _get_tool_fn(update_notebook)
+        result = await fn(
+            notebook_id="12345678901234567890123456789012",
+            title="Renamed",
+        )
+
+        mock_resolver.validate_access.assert_called_once_with(
+            "12345678901234567890123456789012",
+            allowlist_entries=mock_allowlist_config.notebook_allowlist,
+        )
+        mock_resolver.modify_notebook.assert_called_once()
+        assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_update_notebook_non_allowlisted(
+        self,
+        mock_resolver,
+        mock_allowlist_config,
+    ):
+        """Should raise error when notebook is not allowlisted."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        mock_resolver.validate_access.side_effect = ValueError(
+            "Notebook not accessible"
+        )
+
+        fn = _get_tool_fn(update_notebook)
+        with pytest.raises(ValueError, match="Notebook not accessible"):
+            await fn(
+                notebook_id="blocked_nb_id_0000000000000000",
+                title="Should Fail",
+            )
+
+        mock_resolver.modify_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_update_notebook_move_to_root_blocked_under_allowlist(
+        self,
+        mock_resolver,
+        mock_allowlist_config,
+    ):
+        """parent_name='/' is rejected under an allowlist -- moving to
+        top-level would silently move a notebook out of the allowlist's
+        path-pattern scope (parallel to the create_notebook top-level block).
+
+        Without an allowlist this is permitted (the user wants free reign);
+        that case is covered by the e2e move-to-root test.
+        """
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        fn = _get_tool_fn(update_notebook)
+        with pytest.raises(ValueError, match="Notebook not accessible"):
+            await fn(
+                notebook_id="12345678901234567890123456789012",
+                parent_name="/",
+            )
+
+        # No mutation, no cycle check, no destination resolution -- the
+        # block fires before any work.
+        mock_resolver.modify_notebook.assert_not_called()
+        mock_resolver.would_create_cycle.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.get_notebook_id_by_name")
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_update_notebook_move_destination_blocked(
+        self,
+        mock_resolver,
+        mock_resolve,
+        mock_allowlist_config,
+    ):
+        """Move destination outside allowlist is rejected before mutation,
+        even if the source notebook itself is allowlisted."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        mock_resolve.return_value = "destination_id_000000000000000000"
+        mock_resolver.validate_access.side_effect = ValueError(
+            "Notebook not accessible"
+        )
+
+        fn = _get_tool_fn(update_notebook)
+        with pytest.raises(ValueError, match="Notebook not accessible"):
+            await fn(
+                notebook_id="12345678901234567890123456789012",
+                parent_name="Personal",
+            )
+
+        # validate_access was called for the destination; no mutation happened.
+        mock_resolver.validate_access.assert_called_once_with(
+            "destination_id_000000000000000000",
+            allowlist_entries=mock_allowlist_config.notebook_allowlist,
+        )
+        mock_resolver.modify_notebook.assert_not_called()
+
+
+# === Tests for delete_notebook with allowlist ===
+
+
+class TestDeleteNotebookAllowlist:
+    """Tests for delete_notebook allowlist validation."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_delete_notebook_allowlisted(
+        self,
+        mock_get_client,
+        mock_resolver,
+        mock_allowlist_config,
+    ):
+        """Should succeed when notebook is allowlisted."""
+        from joplin_mcp.tools.notebooks import delete_notebook
+
+        mock_client = MagicMock()
+        mock_client.get_notebook.return_value = MagicMock(id="12345678901234567890123456789012")
+        mock_get_client.return_value = mock_client
+
+        fn = _get_tool_fn(delete_notebook)
+        result = await fn(notebook_id="12345678901234567890123456789012")
+
+        mock_resolver.validate_access.assert_called_once_with(
+            "12345678901234567890123456789012",
+            allowlist_entries=mock_allowlist_config.notebook_allowlist,
+        )
+        mock_resolver.delete_notebook.assert_called_once()
+        assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_delete_notebook_non_allowlisted(
+        self,
+        mock_get_client,
+        mock_resolver,
+        mock_allowlist_config,
+    ):
+        """Should raise error when notebook is not allowlisted.
+
+        get_joplin_client is patched because delete_notebook builds the client
+        before it checks the allowlist, so without this the test only passes on
+        a machine that happens to have a joplin-mcp.json with a token in the
+        working directory - it fails on a fresh clone and in CI.
+        """
+        from joplin_mcp.tools.notebooks import delete_notebook
+
+        mock_get_client.return_value = MagicMock()
+        mock_resolver.validate_access.side_effect = ValueError(
+            "Notebook not accessible"
+        )
+
+        fn = _get_tool_fn(delete_notebook)
+        with pytest.raises(ValueError, match="Notebook not accessible"):
+            await fn(notebook_id="blocked_nb_id_0000000000000000")
+
+        mock_resolver.delete_notebook.assert_not_called()
+
+
+# === Backward compatibility tests ===
+
+
+class TestNotebookAllowlistBackwardCompat:
+    """Verify all notebook tools work normally when no allowlist is configured."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.format_item_list")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_list_notebooks_works_without_allowlist(
+        self, mock_get_client, mock_format, mock_no_allowlist_config
+    ):
+        """list_notebooks returns all notebooks when no allowlist."""
+        from joplin_mcp.tools.notebooks import list_notebooks
+
+        mock_notebooks = [MagicMock(id="nb1"), MagicMock(id="nb2")]
+        mock_client = MagicMock()
+        mock_client.get_all_notebooks.return_value = mock_notebooks
+        mock_get_client.return_value = mock_client
+        mock_format.return_value = "OK"
+
+        fn = _get_tool_fn(list_notebooks)
+        result = await fn()
+        assert result == "OK"
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_create_notebook_works_without_allowlist(
+        self, mock_resolver, mock_no_allowlist_config
+    ):
+        """create_notebook succeeds without allowlist."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        mock_resolver.add_notebook.return_value = "id"
+
+        fn = _get_tool_fn(create_notebook)
+        result = await fn(title="Test")
+        assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_update_notebook_works_without_allowlist(
+        self, mock_resolver, mock_no_allowlist_config
+    ):
+        """update_notebook succeeds without allowlist."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        fn = _get_tool_fn(update_notebook)
+        result = await fn(
+            notebook_id="12345678901234567890123456789012", title="New"
+        )
+        assert "SUCCESS" in result
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    @patch("joplin_mcp.tools.notebooks.get_joplin_client")
+    async def test_delete_notebook_works_without_allowlist(
+        self, mock_get_client, mock_resolver, mock_no_allowlist_config
+    ):
+        """delete_notebook succeeds without allowlist."""
+        from joplin_mcp.tools.notebooks import delete_notebook
+
+        mock_client = MagicMock()
+        mock_client.get_notebook.return_value = MagicMock(id="12345678901234567890123456789012")
+        mock_get_client.return_value = mock_client
+
+        fn = _get_tool_fn(delete_notebook)
+        result = await fn(notebook_id="12345678901234567890123456789012")
+        assert "SUCCESS" in result
+
+
+# === Error message tests (D7) ===
+
+
+class TestNotebookAllowlistErrorMessages:
+    """Verify error messages are generic and do not leak notebook details."""
+
+    @pytest.mark.asyncio
+    @patch("joplin_mcp.tools.notebooks.notebook_resolver")
+    async def test_error_does_not_contain_notebook_id(
+        self, mock_resolver, mock_allowlist_config
+    ):
+        """Error message should not contain the notebook ID."""
+        from joplin_mcp.tools.notebooks import update_notebook
+
+        blocked_id = "secret_notebook_id_00000000000000"
+        mock_resolver.validate_access.side_effect = ValueError(
+            "Notebook not accessible"
+        )
+
+        fn = _get_tool_fn(update_notebook)
+        with pytest.raises(ValueError) as exc_info:
+            await fn(notebook_id=blocked_id, title="X")
+
+        error_msg = str(exc_info.value)
+        assert blocked_id not in error_msg
+        assert "secret" not in error_msg.lower()
+        assert "Notebook not accessible" in error_msg
+
+    @pytest.mark.asyncio
+    async def test_create_top_level_error_is_generic(self, mock_allowlist_config):
+        """Top-level creation error should be generic."""
+        from joplin_mcp.tools.notebooks import create_notebook
+
+        fn = _get_tool_fn(create_notebook)
+        with pytest.raises(ValueError) as exc_info:
+            await fn(title="My Secret Notebook")
+
+        error_msg = str(exc_info.value)
+        assert "My Secret Notebook" not in error_msg
+        assert "Notebook not accessible" in error_msg

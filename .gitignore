@@ -113,6 +113,12 @@ ipython_config.py
 #   https://pdm.fming.dev/#use-with-ide
 .pdm.toml
 
+# uv
+#   Not tracked for this project: pyproject.toml is the source of truth for
+#   deps, and nothing in CI/Docker installs from the lock. A tracked lock just
+#   drifts (it sat on fastmcp 2.x long after the 0.9.0 bump to fastmcp 3.x).
+uv.lock
+
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
 
@@ -251,6 +257,9 @@ temp-*.json
 # Test output
 test_output/
 temp_test_files/
+# Sample notes, importer fixtures and live-API scripts used when exercising
+# the tools by hand. Not part of the pytest suite.
+test_files/
 
 # Diagnostic / experimental scratch
 test_scripts/
@@ -276,4 +285,11 @@ src/joplin_mcp/dashboard/configs/*
 
 # Local development overrides
 local_config.py
-dev_settings.py 
+dev_settings.py
+
+# Coding-agent instructions and design notes kept local to a working copy.
+# Untracked on purpose: they follow whoever is working on the repo, not the
+# release. .* already covers the dot-prefixed ones (.claude/, .codex/).
+AGENTS.md
+CLAUDE.md
+docs/mcp-design-patterns.md 

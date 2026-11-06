@@ -3,9 +3,9 @@ import ast
 import json
 import logging
 from pathlib import Path
-from typing import Annotated, Any, Dict, Optional, Union
+from typing import Annotated, Any, Dict, Literal, Optional
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from joplin_mcp.config import JoplinMCPConfig
 from joplin_mcp.fastmcp_server import create_tool, get_joplin_client
@@ -24,6 +24,48 @@ from .importers.utils import looks_like_raw_export
 from .types import ImportOptions
 
 logger = logging.getLogger(__name__)
+
+
+def _require_all_properties(schema: Dict[str, Any], _model: Any) -> None:
+    """Make object schemas strict-client compatible.
+
+    Some strict function-schema validators require every declared property to
+    appear in ``required`` even when the field itself is nullable.
+    """
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        schema["required"] = list(properties.keys())
+
+
+class ImportFromFileOptions(BaseModel):
+    """Structured import options exposed through the MCP schema."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_require_all_properties,
+    )
+
+    handle_duplicates: Optional[Literal["skip", "overwrite", "rename"]] = None
+    create_missing_notebooks: Optional[bool] = None
+    create_missing_tags: Optional[bool] = None
+    preserve_timestamps: Optional[bool] = None
+    max_batch_size: Optional[int] = Field(default=None, ge=1)
+    attachment_handling: Optional[Literal["link", "embed", "skip"]] = None
+    encoding: Optional[str] = None
+    max_file_size_mb: Optional[int] = Field(default=None, ge=1)
+    file_pattern: Optional[str] = None
+    preserve_structure: Optional[bool] = None
+    preserve_directory_structure: Optional[bool] = None
+    # The fields below are not ImportOptions attributes: import_from_file routes
+    # them into base_options.import_options, where the importers read them
+    # (csv_import_mode/csv_delimiter in csv_importer; extract_hashtags in
+    # markdown_importer and base). extra="forbid" makes this a closed set, so a
+    # new importer option must be declared here too to be passable over MCP.
+    csv_import_mode: Optional[Literal["table", "rows"]] = None
+    csv_delimiter: Optional[str] = Field(
+        default=None, min_length=1, max_length=1, description="Single-character CSV delimiter override"
+    )
+    extract_hashtags: Optional[bool] = None
 
 
 # === UTILITY FUNCTIONS ===
@@ -114,18 +156,6 @@ def get_importer_for_format(file_format: str, options: ImportOptions):
     return importer_class(options)
 
 
-def detect_source_format(source_path: str) -> str:
-    """Detect format from file or directory path."""
-    path = Path(source_path)
-
-    if path.is_file():
-        return detect_file_format(source_path)
-    elif path.is_dir():
-        return detect_directory_format(source_path)
-    else:
-        raise ValueError(f"Source path does not exist: {source_path}")
-
-
 def detect_file_format(file_path: str) -> str:
     """Detect file format from file extension."""
     path = Path(file_path)
@@ -207,79 +237,6 @@ def detect_directory_format(directory_path: str) -> str:
     return next(iter(present_supported))
 
 
-async def import_source(
-    source_path: str,
-    target_notebook: Optional[str] = None,
-    import_options: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Import from file or directory source.
-
-    Args:
-        source_path: Path to file or directory to import
-        target_notebook: Target notebook name
-        import_options: Import configuration options
-
-    Returns:
-        Formatted import result
-    """
-    # Create import options
-    options = ImportOptions(
-        handle_duplicates=(
-            import_options.get("handle_duplicates", "rename")
-            if import_options
-            else "rename"
-        ),
-        create_missing_notebooks=(
-            import_options.get("create_missing_notebooks", True)
-            if import_options
-            else True
-        ),
-        create_missing_tags=(
-            import_options.get("create_missing_tags", True) if import_options else True
-        ),
-    )
-
-    # Detect format
-    detected_format = detect_source_format(source_path)
-
-    # Get appropriate importer
-    importer = get_importer_for_format(detected_format, options)
-
-    # Validate source
-    await importer.validate(source_path)
-
-    # Parse based on source type
-    path = Path(source_path)
-    if path.is_file():
-        notes = await importer.parse(source_path)
-    elif path.is_dir():
-        if hasattr(importer, "parse_directory"):
-            notes = await importer.parse_directory(source_path)
-        else:
-            # Fallback: use base class directory parsing
-            notes = await importer.parse_directory(source_path)
-    else:
-        raise ValueError(f"Invalid source path: {source_path}")
-
-    if not notes:
-        return f"No notes imported from {source_path}"
-
-    # Set target notebook if specified
-    if target_notebook:
-        for note in notes:
-            if not note.notebook:  # Don't override existing notebook assignments
-                note.notebook = target_notebook
-
-    # Get Joplin client and import
-    config = JoplinMCPConfig()
-    client = get_joplin_client()
-    engine = JoplinImportEngine(client, config)
-
-    result = await engine.import_batch(notes, options)
-
-    return format_import_result(result)
-
-
 # === IMPORT TOOL ===
 
 
@@ -294,8 +251,8 @@ async def import_from_file(
         Optional[str], Field(description="Target notebook name (optional, defaults to 'Imported')")
     ] = 'Imported',
     import_options: Annotated[
-        Optional[Union[Dict[str, Any], str]],
-        Field(description="Additional import options (object/dict; string is auto-parsed)")
+        Optional[ImportFromFileOptions],
+        Field(description="Additional structured import options")
     ] = None,
 ) -> str:
     """Import notes from a file or directory.
@@ -378,7 +335,9 @@ async def import_from_file(
             max_file_size_mb=config.import_settings.get("max_file_size_mb", 100),
         )
 
-        # Apply additional options (accept dict or JSON/Python-dict string)
+        # Apply additional options. Older direct Python callers may still pass a
+        # JSON/Python-dict string even though the MCP schema now exposes this as
+        # an object-only parameter for better client compatibility.
         if import_options:
             if isinstance(import_options, str):
                 try:
@@ -392,6 +351,10 @@ async def import_from_file(
                         return "VALIDATION_ERROR: import_options string did not parse to an object"
                 except Exception:
                     return "VALIDATION_ERROR: import_options must be an object or JSON/dict string"
+            elif isinstance(import_options, BaseModel):
+                import_options = import_options.model_dump(exclude_none=True)
+            elif not isinstance(import_options, dict):
+                return "VALIDATION_ERROR: import_options must be an object or JSON/dict string"
             # Merge structured options
             for key, value in import_options.items():
                 if hasattr(base_options, key):

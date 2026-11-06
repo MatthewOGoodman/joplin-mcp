@@ -1,13 +1,15 @@
 """Tag tools for Joplin MCP."""
-from typing import Annotated
+from typing import Annotated, Dict, List, Tuple, Union
 
 from pydantic import Field
 
+from joplin_mcp.config import get_config
 from joplin_mcp.fastmcp_server import (
     COMMON_NOTE_FIELDS,
     ItemType,
     JoplinIdType,
     RequiredStringType,
+    _sanitise_error,
     create_tool,
     format_creation_success,
     format_delete_success,
@@ -20,82 +22,106 @@ from joplin_mcp.fastmcp_server import (
     get_tag_id_by_name,
     process_search_results,
 )
+from joplin_mcp.notebook_utils import AllowlistDeniedError, validate_notebook_access
 
+# === TAG-NOTE BULK HELPERS ===
 
-# === TAG HELPER FUNCTIONS ===
+def _resolve_tag_ids(client, tag_names: List[str]) -> Dict[str, str]:
+    """Resolve multiple tag names to IDs with a single get_all_tags fetch.
 
+    Returns a dict keyed by the *input* names (preserving case) mapping to tag IDs.
+    Raises ValueError if any name is missing or ambiguous (multiple Joplin tags
+    with the same case-insensitive title), matching get_tag_id_by_name parity.
+    """
+    all_tags = client.get_all_tags(fields="id,title")
+    by_lower: Dict[str, List[str]] = {}
+    for t in all_tags:
+        tid = getattr(t, "id", None)
+        if not tid:
+            continue
+        by_lower.setdefault(getattr(t, "title", "").lower(), []).append(tid)
 
-async def _tag_note_impl(note_id: str, tag_name: str) -> str:
-    """Shared implementation for adding a tag to a note using note ID and tag name."""
-    client = get_joplin_client()
+    resolved: Dict[str, str] = {}
+    missing: List[str] = []
+    ambiguous: List[str] = []
+    for name in tag_names:
+        matches = by_lower.get(name.lower(), [])
+        if not matches:
+            missing.append(name)
+        elif len(matches) > 1:
+            ambiguous.append(name)
+        else:
+            resolved[name] = matches[0]
 
-    # Verify note exists by getting it
-    try:
-        note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
-        note_title = getattr(note, "title", "Unknown Note")
-    except Exception:
-        raise ValueError(
-            f"Note with ID '{note_id}' not found. Use find_notes to find available notes."
-        )
+    if missing or ambiguous:
+        parts: List[str] = []
+        if missing:
+            quoted = ", ".join(f"'{m}'" for m in missing)
+            parts.append(f"Tag(s) not found: {quoted}.")
+        if ambiguous:
+            quoted = ", ".join(f"'{a}'" for a in ambiguous)
+            parts.append(f"Ambiguous tag name(s): {quoted}.")
+        available = [getattr(t, "title", "Untitled") for t in all_tags]
+        parts.append(f"Available tags: {', '.join(available)}.")
+        if missing:
+            parts.append("Use create_tag to create a new tag.")
+        raise ValueError(" ".join(parts))
+    return resolved
 
-    # Use helper function to get tag ID
-    tag_id = get_tag_id_by_name(tag_name)
+def _sanitize_report_field(value: str) -> str:
+    """Normalise whitespace and replace double quotes for the one-line report format."""
+    return " ".join(value.split()).replace('"', "'")
 
-    client.add_tag_to_note(tag_id, note_id)
-    return format_relation_success(
-        "tagged note",
-        ItemType.note,
-        f"{note_title} (ID: {note_id})",
-        ItemType.tag,
-        tag_name,
-    )
+def _format_tag_op_report(
+    operation: str,
+    results: List[Tuple[str, str, bool, str]],
+) -> str:
+    """Format an aggregated TAG_NOTE / UNTAG_NOTE report for bulk ops."""
+    total = len(results)
+    succeeded = sum(1 for _, _, ok, _ in results if ok)
+    failed = total - succeeded
+    status = "SUCCESS" if failed == 0 else "PARTIAL"
 
-
-async def _untag_note_impl(note_id: str, tag_name: str) -> str:
-    """Shared implementation for removing a tag from a note using note ID and tag name."""
-
-    client = get_joplin_client()
-
-    # Verify note exists by getting it
-    try:
-        note = client.get_note(note_id, fields=COMMON_NOTE_FIELDS)
-        note_title = getattr(note, "title", "Unknown Note")
-    except Exception:
-        raise ValueError(
-            f"Note with ID '{note_id}' not found. Use find_notes to find available notes."
-        )
-
-    # Use helper function to get tag ID
-    tag_id = get_tag_id_by_name(tag_name)
-
-    client.delete(f"/tags/{tag_id}/notes/{note_id}")
-    return format_relation_success(
-        "removed tag from note",
-        ItemType.note,
-        f"{note_title} (ID: {note_id})",
-        ItemType.tag,
-        tag_name,
-    )
-
+    lines = [
+        f"OPERATION: {operation}",
+        f"STATUS: {status}",
+        f"TOTAL_OPS: {total}",
+        f"SUCCEEDED: {succeeded}",
+        f"FAILED: {failed}",
+        f"MESSAGE: {succeeded} of {total} operations succeeded",
+    ]
+    if failed:
+        lines.append("FAILURES:")
+        for note_id, tag_name, ok, err in results:
+            if not ok:
+                clean_tag = _sanitize_report_field(tag_name)
+                clean_err = _sanitize_report_field(err)
+                lines.append(
+                    f'  - note_id={note_id} tag_name="{clean_tag}" error="{clean_err}"'
+                )
+    return "\n".join(lines)
 
 # === TAG TOOLS ===
 
-
 @create_tool("list_tags", "List tags")
-async def list_tags() -> str:
+async def list_tags(
+    verbose: Annotated[
+        bool,
+        Field(description="Also return creation and update timestamps (default: False)"),
+    ] = False,
+) -> str:
     """List all tags in your Joplin instance with note counts.
 
     Retrieves and displays all tags that exist in your Joplin application. Tags are labels
     that can be applied to notes for categorization and organization.
 
     Returns:
-        str: Formatted list of all tags including title, unique ID, number of notes tagged with it, and creation date.
+        str: Formatted list of all tags including title, unique ID and number of notes tagged with it.
     """
     client = get_joplin_client()
     fields_list = "id,title,created_time,updated_time"
     tags = client.get_all_tags(fields=fields_list)
-    return format_tag_list_with_counts(tags, client)
-
+    return format_tag_list_with_counts(tags, client, verbose=verbose)
 
 @create_tool("create_tag", "Create tag")
 async def create_tag(
@@ -116,7 +142,6 @@ async def create_tag(
     tag = client.add_tag(title=title)
     return format_creation_success(ItemType.tag, title, str(tag))
 
-
 @create_tool("update_tag", "Update tag")
 async def update_tag(
     tag_id: Annotated[JoplinIdType, Field(description="Tag ID to update")],
@@ -131,8 +156,7 @@ async def update_tag(
     """
     client = get_joplin_client()
     client.modify_tag(tag_id, title=title)
-    return format_update_success(ItemType.tag, tag_id)
-
+    return format_update_success(ItemType.tag, tag_id, title=title)
 
 @create_tool("delete_tag", "Delete tag")
 async def delete_tag(
@@ -140,18 +164,22 @@ async def delete_tag(
 ) -> str:
     """Delete a tag from Joplin.
 
-    Permanently removes a tag from Joplin. This action cannot be undone.
-    The tag will be removed from all notes that currently have it.
+    Hard-deletes the tag (unlike delete_note and delete_notebook which
+    soft-delete to trash and can be recovered via restore_from_trash).
+    The tag is removed from all notes that currently have it; the notes
+    themselves are unaffected.
 
     Returns:
         str: Success message confirming the tag was deleted.
 
-    Warning: This action is permanent and cannot be undone. The tag will be removed from all notes.
+    Raises:
+        ValueError: if the tag ID does not exist.
+
+    Warning: This action is permanent and cannot be undone.
     """
     client = get_joplin_client()
     client.delete_tag(tag_id)
-    return format_delete_success(ItemType.tag, tag_id, soft_delete=False)
-
+    return format_delete_success(ItemType.tag, tag_id)
 
 @create_tool("get_tags_by_note", "Get tags by note")
 async def get_tags_by_note(
@@ -166,6 +194,15 @@ async def get_tags_by_note(
     """
 
     client = get_joplin_client()
+
+    # Allowlist validation: ensure note is in an accessible notebook
+    if get_config().has_notebook_allowlist:
+        note = client.get_note(note_id, fields="id,parent_id")
+        parent_id = getattr(note, "parent_id", "")
+        validate_notebook_access(
+            parent_id, allowlist_entries=get_config().notebook_allowlist
+        )
+
     fields_list = "id,title,created_time,updated_time"
     tags_result = client.get_tags(note_id=note_id, fields=fields_list)
     tags = process_search_results(tags_result)
@@ -175,48 +212,134 @@ async def get_tags_by_note(
 
     return format_item_list(tags, ItemType.tag)
 
-
 # === TAG-NOTE RELATIONSHIP OPERATIONS ===
-
 
 @create_tool("tag_note", "Tag note")
 async def tag_note(
-    note_id: Annotated[JoplinIdType, Field(description="Note ID to add tag to")],
-    tag_name: Annotated[RequiredStringType, Field(description="Tag name to add")],
+    note_id: Annotated[
+        Union[JoplinIdType, List[JoplinIdType]],
+        Field(description="Note ID, or list of note IDs"),
+    ],
+    tag_name: Annotated[
+        Union[RequiredStringType, List[RequiredStringType]],
+        Field(description="Tag name, or list of tag names"),
+    ],
 ) -> str:
-    """Add a tag to a note for categorization and organization.
+    """Add one or more tags to one or more notes.
 
-    Applies an existing tag to a specific note using the note's unique ID and the tag's name.
-    Uses note ID for precise targeting and tag name for intuitive selection.
+    Both args accept a single string or a list. When either is a list, the cartesian
+    product is applied (every tag on every note) in one call — preferred over looping.
 
-    Returns:
-        str: Success message confirming the tag was added to the note.
+    Output: aggregated TAG_NOTE report with TOTAL_OPS / SUCCEEDED / FAILED, one row
+    per (note, tag) pair (so the scalar case is a one-row report).
+
+    Tags must exist beforehand — use create_tag to add new ones. Missing tags are
+    reported up front and nothing is applied. Per-op failures (e.g. invalid note ID
+    or allowlist denial) are captured in the report; other ops still run.
 
     Examples:
-        - tag_note("a1b2c3d4e5f6...", "Important") - Add 'Important' tag to specific note
-        - tag_note("note_id_123", "Work") - Add 'Work' tag to the note
-
-    Note: The note must exist (by ID) and the tag must exist (by name). A note can have multiple tags.
+        - tag_note("abc...", "Work") - Tag one note with one tag
+        - tag_note(["abc...", "def..."], "Work") - Tag two notes with one tag
+        - tag_note("abc...", ["Work", "Urgent"]) - Add two tags to one note
+        - tag_note(["abc...", "def..."], ["Work", "Urgent"]) - 2x2 = 4 ops
     """
-    return await _tag_note_impl(note_id, tag_name)
+    note_ids = [note_id] if isinstance(note_id, str) else list(note_id)
+    tag_names = [tag_name] if isinstance(tag_name, str) else list(tag_name)
+    if not note_ids:
+        raise ValueError("note_id list must not be empty")
+    if not tag_names:
+        raise ValueError("tag_name list must not be empty")
 
+    client = get_joplin_client()
+
+    # Resolve all tags up front, then loop the cartesian product.
+    tag_map = _resolve_tag_ids(client, tag_names)
+
+    results: List[Tuple[str, str, bool, str]] = []
+    for nid in note_ids:
+        # Allowlist validation per note in bulk path
+        if get_config().has_notebook_allowlist:
+            try:
+                note = client.get_note(nid, fields="id,parent_id")
+                parent_id = getattr(note, "parent_id", "")
+                validate_notebook_access(
+                    parent_id, allowlist_entries=get_config().notebook_allowlist
+                )
+            except AllowlistDeniedError as e:
+                for tname in tag_names:
+                    results.append((nid, tname, False, str(e)))
+                continue
+
+        for tname in tag_names:
+            try:
+                client.add_tag_to_note(tag_map[tname], nid)
+                results.append((nid, tname, True, ""))
+            except Exception as e:
+                results.append((nid, tname, False, _sanitise_error(str(e))))
+
+    return _format_tag_op_report("TAG_NOTE", results)
 
 @create_tool("untag_note", "Untag note")
 async def untag_note(
-    note_id: Annotated[JoplinIdType, Field(description="Note ID to remove tag from")],
-    tag_name: Annotated[RequiredStringType, Field(description="Tag name to remove")],
+    note_id: Annotated[
+        Union[JoplinIdType, List[JoplinIdType]],
+        Field(description="Note ID, or list of note IDs"),
+    ],
+    tag_name: Annotated[
+        Union[RequiredStringType, List[RequiredStringType]],
+        Field(description="Tag name, or list of tag names"),
+    ],
 ) -> str:
-    """Remove a tag from a note.
+    """Remove one or more tags from one or more notes.
 
-    Removes an existing tag from a specific note using the note's unique ID and the tag's name.
+    Both args accept a single string or a list. When either is a list, the cartesian
+    product is applied (remove every tag from every note) in one call.
 
-    Returns:
-        str: Success message confirming the tag was removed from the note.
+    Output: aggregated UNTAG_NOTE report with TOTAL_OPS / SUCCEEDED / FAILED, one row
+    per (note, tag) pair (so the scalar case is a one-row report).
+
+    Tags must exist (by name). Missing tags are reported up front and nothing is
+    removed. Per-op failures (including allowlist denials) are captured in the
+    report; other ops still run.
 
     Examples:
-        - untag_note("a1b2c3d4e5f6...", "Important") - Remove 'Important' tag from specific note
-        - untag_note("note_id_123", "Work") - Remove 'Work' tag from the note
-
-    Note: Both the note (by ID) and tag (by name) must exist in Joplin.
+        - untag_note("abc...", "Work") - Remove one tag from one note
+        - untag_note(["abc...", "def..."], "Work") - Remove one tag from two notes
+        - untag_note("abc...", ["Work", "Urgent"]) - Remove two tags from one note
+        - untag_note(["abc...", "def..."], ["Work", "Urgent"]) - 2x2 = 4 ops
     """
-    return await _untag_note_impl(note_id, tag_name)
+    note_ids = [note_id] if isinstance(note_id, str) else list(note_id)
+    tag_names = [tag_name] if isinstance(tag_name, str) else list(tag_name)
+    if not note_ids:
+        raise ValueError("note_id list must not be empty")
+    if not tag_names:
+        raise ValueError("tag_name list must not be empty")
+
+    client = get_joplin_client()
+
+    # Resolve all tags up front, then loop the cartesian product.
+    tag_map = _resolve_tag_ids(client, tag_names)
+
+    results: List[Tuple[str, str, bool, str]] = []
+    for nid in note_ids:
+        # Allowlist validation per note in bulk path
+        if get_config().has_notebook_allowlist:
+            try:
+                note = client.get_note(nid, fields="id,parent_id")
+                parent_id = getattr(note, "parent_id", "")
+                validate_notebook_access(
+                    parent_id, allowlist_entries=get_config().notebook_allowlist
+                )
+            except AllowlistDeniedError as e:
+                for tname in tag_names:
+                    results.append((nid, tname, False, str(e)))
+                continue
+
+        for tname in tag_names:
+            try:
+                client.delete(f"/tags/{tag_map[tname]}/notes/{nid}")
+                results.append((nid, tname, True, ""))
+            except Exception as e:
+                results.append((nid, tname, False, _sanitise_error(str(e))))
+
+    return _format_tag_op_report("UNTAG_NOTE", results)

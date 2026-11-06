@@ -1,5 +1,174 @@
+# [v0.10.0](https://github.com/alondmnt/joplin-mcp/releases/tag/v0.10.0)
+*Released on 2026-09-12*
+
+## Breaking Changes
+
+All three change what an existing install does on upgrade (#60).
+
+- **Environment variables now override the config file.** Discovery used to pick one source or the other, so every `JOPLIN_*` variable was inert for anyone who had run the installer, and a config file without a token made `JOPLIN_TOKEN` unreachable. If you set `JOPLIN_*` alongside a `joplin-mcp.json` and relied on the file winning, it no longer does.
+- **A blank `JOPLIN_NOTEBOOK_ALLOWLIST` stays deny-all.** Blank reads as unset for every other key, but an empty allowlist is not the same as no allowlist: treating it as absent would have flipped a locked-down install to every notebook on upgrade.
+- **The server refuses to start when config loading fails.** A malformed variable used to leave a permissive stand-in running instead: a live, authenticated server with writes enabled and an allowlist of `**`, none of which the config file granted.
+
+## Response Format
+
+Four changes that cut what every call costs, prompted by BennyTramell's report on token use (#59) and tracked in #66. On a 41-notebook instance: `list_notebooks` 8442 to 4990 characters despite gaining `note_count`, `list_tags` 613 to 389.
+
+- **Listings drop decorative fields.** `list_notebooks` returns `id`, `title`, `path` and `note_count`; `icon`, `parent_id` and the timestamps now need `verbose=True`. Same treatment for `list_tags` timestamps.
+- **Pagination is stated once.** The seven-line header and the `PAGINATION_SUMMARY` footer gave the same numbers twice. One line carries all of it: `RESULTS: 1-5 of 446 (offset=0, limit=5)`. An empty page past the end now reports `0 of 10` rather than `0-100`, which read as a range with results in it.
+- **Worked-example hints are opt-in, default off.** The `NEXT_STEPS` block on `get_note` and the `NEXT_PAGE` line on paginated responses restate what the tool schema already documents. Set `output_hints` (or `JOPLIN_OUTPUT_HINTS`) to bring them back. It is a server setting rather than a per-call parameter because a model weak enough to need the hints cannot reliably ask for them.
+- **Note content stats collapse onto one line**, in listings and single-note views alike (#59).
+
+## What's New
+
+- **`note_count` in `list_notebooks`** - one of the few fields an agent acts on when picking a notebook, and the one that was missing. A failed count leaves the line out rather than failing the listing.
+
+## Fixes
+
+- **Tag note counts no longer cap at 100.** `list_tags` counted through a paginated call, so a tag on 250 notes reported 100. It also pulled every tagged note's body across the wire to do it (#59).
+- **Multi-line note content no longer breaks search-result parsing.** Result fields sit at two spaces while the body was pasted in at column zero, so a body line reading `  todo: x` looked like the next field, and one reading `RESULT_2:` moved the record boundary and silently reattributed the rest of that note to a different result. `content` and `content_preview` now sit under their own label, indented deeper than the fields.
+- **Smart TOC environment variables are actually read.** `JOPLIN_SMART_TOC_THRESHOLD` and `JOPLIN_ENABLE_SMART_TOC` have been documented since the knobs were added but never read, so tuning them through the environment silently got the defaults. The JSON config path always worked (#59).
+- **`update_note`, `update_notebook` and `update_tag` name the item they changed** in their success message, as does `edit_note` (#63 by @Vpatel1093).
+- **The `content_exposure.listings` knob is gone.** It was documented and validated but no tool ever read it, so setting `listings=none` to cut token use changed nothing. Existing config files still load: the key is tolerated with a warning. The installer's privacy score rescales accordingly, having been propped up by the dead knob (#59, raised by BennyTramell).
+- **Troubleshooting for `cannot import name 'FastMCP' from 'fastmcp'`.** An in-place upgrade can leave fastmcp importable only as an empty namespace package, because it ships as two pip distributions sharing one package directory. Reinstalling `joplin-mcp` does not help. The troubleshooting guide now carries the recovery command (#55, reported by sinewave-2097).
+- **`import_from_file` schemas work with strict clients** that require every declared property to appear in `required`, even nullable ones (#57 by @toniher).
+
+## Other Changes
+
+- **`requirements.txt` removed** in favour of pyproject. It had drifted and was missing three runtime deps, so installing from it produced an incomplete environment. Use `pip install joplin-mcp`.
+- **`scripts/bump_version.py`** sets or verifies the version everywhere it is hard-coded, and the release workflow checks it against the tag. The workflow also gained a dry run, and now fails rather than skipping when the PyPI token is missing.
+- **Test suite passes against fastmcp 3.4**, which re-raises Pydantic argument errors as its own `ValidationError` type.
+- **Claude Code plugin manifests track the project version** and no longer advertise 24 tools when there are 26. `SKILL.md` still documented `parent_id` for notebooks, which v0.9.0 replaced with `parent_name`.
+- **`uv.lock` is no longer tracked**, and the unused `import_source` code path is gone.
+
+**Full Changelog**: https://github.com/alondmnt/joplin-mcp/compare/v0.9.0...v0.10.0
+
+---
+
+# [v0.9.0](https://github.com/alondmnt/joplin-mcp/releases/tag/v0.9.0)
+*Released on 2026-06-10*
+
+## Breaking Changes
+
+- **`create_notebook` now takes `parent_name` instead of `parent_id`.** Pass a notebook name or path (e.g. `Projects/Work`) — the same resolver `create_note` and `update_note` already use — or omit it for a top-level notebook. This brings notebook creation in line with the rest of the API (notebooks by name, notes by ID). Callers passing `parent_id` must switch (#41).
+
+## What's New
+
+- **`get_note_resources`** — a new tool that lists a note's resources (images, PDFs, attachments) and exposes the OCR text Joplin has already extracted from them. An agent reading a note can now also see what's inside its images and scanned PDFs, without mutating the note body (closes #52, requested by JaneX8).
+- **Move notebooks between parents** — `update_notebook` accepts a `parent_name` argument. Pass a notebook name or path to reparent it, or `/` to move it to top-level. Cycle prevention runs before the API call, since Joplin itself silently accepts cycles and would orphan the affected notebooks. Under an allowlist, moving to root is refused with the same generic error as `create_notebook`, so an agent can't quietly move a notebook out of enforced scope (closes #53, requested by JaneX8).
+- **Emoji icons on notebooks** — `create_notebook` and `update_notebook` accept an `emoji` argument that sets the sidebar icon Joplin renders next to the folder. Without this the agent could only stuff the glyph into the title text, which is what surfaced the request (closes #51, requested by JaneX8). Pass `emoji=""` to `update_notebook` to clear an existing icon. `list_notebooks` surfaces the icon back to the agent (emoji glyph for emoji icons, `icon: image` for image-type icons set in the desktop client).
+  - the codepoint cap was widened to 16 to accommodate multi-codepoint emoji (ZWJ sequences, flags, skin-tone modifiers)
+  - legacy typeless emoji icons (set by older Joplin versions) now render in `list_notebooks` instead of being skipped
+- **Notebook allowlist opt-in during install** — the interactive installer now asks whether to restrict the agent to specific notebooks. Default is no (unrestricted), so a fresh install still works out of the box; opting in re-asks until you give at least one notebook, since an empty allowlist would lock the agent out entirely. Gives the allowlist a discoverable entry point instead of requiring a hand-edited config.
+
+## Fixes
+
+- **Empty title rejected on `update_note` and `update_notebook`** — an empty or whitespace-only title is caught at the tool boundary instead of being written through.
+- **Docker image builds again** — `entrypoint.sh` had CRLF line endings that broke the build; the Dockerfile now strips CR during build (closes #50, reported by JaneX8).
+- **`notebook_allowlist` persists through `save_config_to_path`** — it was being dropped when the config was written back to disk.
+- **Broken venv no longer fatal** — the installer prompts to recreate a broken virtualenv instead of re-exec'ing into it and failing.
+
+## Other Changes
+
+- **Cross-platform `bootstrap.py` replaces `install.sh` / `install.bat`.** The two shell-script renditions (~180 lines of bash + batch handling the venv/python-discovery platform delta) collapse into one ~95-line Python script that works on both platforms, with `--no-venv` for CI. Install entry points were consolidated into a single canonical runner along the way.
+- **Note-cache invalidation moved into `note_view`**, so the module that renders notes also owns invalidating their cache.
+- **Dropped unused `format_item_details`** from `fastmcp_server`.
+
+**Full Changelog**: https://github.com/alondmnt/joplin-mcp/compare/v0.8.0...v0.9.0
+
+---
+
+# [v0.8.0](https://github.com/alondmnt/joplin-mcp/releases/tag/v0.8.0)
+*Released on 2026-05-16T10:27:53Z*
+
+## What's New
+
+- **Notebook allowlist** — pattern-based access control restricting the AI to a chosen set of notebooks. Useful when you want an agent that can touch your work notes but not your personal ones, or any other slice of the tree.
+  - gitignore-style patterns: exact names, `*` wildcards, `**` recursive, `!` negation
+  - hierarchical access: allowing a parent grants access to all children
+  - enforced across every tool that touches notebooks: read, write, search, list, tag
+  - generic refusal messages on denials, so the agent doesn't learn which notebooks exist behind the allowlist
+  - configurable via JSON (`notebook_allowlist`) or env var (`JOPLIN_NOTEBOOK_ALLOWLIST`)
+  - startup validation with logging, and auto-creation of a default notebook when the allowlist resolves to zero accessible notebooks
+  - landed across #25, #26, #27 by @rubalo
+- **`restore_from_trash`** — recover soft-deleted notes from Joplin's trash. The MCP could already soft-delete via `delete_note` but had no way to undelete, so an accidental delete by an agent meant dropping into the Joplin UI to recover. That gap is now closed (#23 by @MatthewOGoodman).
+- **Move notes between notebooks** — `update_note` accepts a `notebook_name` argument that relocates the note in a single call. Previously the only way to move a note from inside the MCP was a delete-and-recreate dance (closes #21).
+- **Bulk tag operations** — `tag_note` and `untag_note` accept lists of note IDs and tag names. When either side is a list, the cartesian product runs in one call with a per-pair report, so tagging a batch of notes is one tool invocation instead of N (closes #22).
+
+## Dependency Changes
+
+- **`fastmcp` upgraded to v3** (`>=3,<4`, with `3.3.1` excluded for an upstream import regression). `fastmcp` 3.x moved tool storage off `_tool_manager._tools` onto a provider model and made decorators return the wrapped function instead of a Tool object, so the internal registration path was rewritten against the v3 API. No surface-API change for users beyond the dependency bump itself.
+
+## Fixes
+
+- **Information disclosure in error messages** — tool errors used to forward the Joplin API token via the request URL, the internal TypeScript stack-trace lines from Joplin Desktop, and absolute filesystem paths from the install location (some wrapped in `file://` URLs, some inside JSON response bodies with escaped `\n` between frames). The sanitiser now scrubs all of those before the message reaches the MCP client. The leak was surfaced by an agent smoke test against `get_note` with an all-zeros ID; a follow-up smoke pass surfaced the JSON-escaped / `file://` variants that the first pass missed (#49).
+- **`delete_notebook` no longer reports SUCCESS for a non-existent notebook.** Joplin's Data API is idempotent on DELETE — calling it for a missing notebook silently 200s. The tool now does a GET first so the 404 propagates as a sanitised `ValueError` instead of masking a no-op as success. Surfaced by the agent smoke test.
+- **`delete_note` no longer reports SUCCESS for a non-existent note** — same root cause as `delete_notebook`. The fix is tidier here because the allowlist branch already had a `client.get_note(...)` for the parent-ID lookup; pulling that GET out of the conditional lets it serve as the existence check too, so there's no extra round trip when the allowlist is on.
+- **Stricter `create_notebook` parent ID validation** — malformed parent IDs are caught at the tool boundary now, instead of falling through to joppy with a less useful error (#28 by @iclem).
+- **Allowlist edge cases**:
+  - empty list now denies all access, instead of being treated as "no restriction" (#46, #47)
+  - the allowlist is preserved through `JoplinMCPConfig.copy`, so derived configs don't silently drop the restriction (#45)
+  - the notebook-resolver factory rebinds correctly when the client is patched, so tests using monkey-patched clients no longer see stale state (#38)
+- **Smart-TOC `NEXT_STEPS` grounded in the note's own headings** — the hint used to show placeholder examples like `section="Introduction"` and `start_line=45` that didn't match the TOC printed directly above. Now both examples pull from the parsed headings: a real heading title and a real line number, so an agent doesn't have to mentally substitute.
+- `DELETED` metadata is surfaced on every note-returning path, so trashed notes are always flagged regardless of which tool fetched them.
+- The `delete_notebook` recovery hint is corrected.
+- The installer's update-tools prompt now offers `restore_from_trash` on upgrade.
+
+## Other Changes
+
+A fair amount of internal restructuring lands alongside the features, mostly aimed at making the codebase easier to navigate and the tests less coupled to import-time state:
+
+- **`NotebookResolver`** owns the notebook cache, path resolution, and invalidation in one place (previously scattered across the server module). Includes a thunk-bound factory so test patches of the joppy client propagate correctly (#38).
+- **Config resolver** in `joplin_mcp.config` centralises config reads through a single entry point and drops the module-global `_module_config` shim. Test patches now propagate predictably.
+- **Tool gating** deferred to `register_tools` so the runtime config (e.g. `--config-file`) takes effect at server start, rather than being frozen at decoration time (#40).
+- **Note rendering** moved into `note_view`; the `get_note` display dispatch collapsed into the same module, keeping formatting out of the tool layer (#39, #43).
+- **Search helpers** consolidated next to `find_notes` (#44).
+- **Interactive config construction** moved to `ui_integration`, so the installer no longer reaches into server-time code (#48).
+- **Delete-tool docstring asymmetry surfaced** — `delete_note` and `delete_notebook` explicitly state they're reversible (unlike `delete_tag`, which is permanent), and `delete_tag`'s description references the other two from its side. All three now document their missing-ID failure modes via a `Raises:` clause.
+- **E2E suite for the notebook allowlist** (#27 by @rubalo), plus broader tightening of the existing e2e tests (#32, #33). `delete_note`'s soft-delete behaviour is asserted explicitly now (#34); `JoplinIdType` validation is exercised through the MCP `.run()` path (#37).
+- **Opt-in e2e** via `--run-e2e`, so the unit suite stays fast by default and e2e only runs when you have a live Joplin instance to point at (#35).
+- **Agent smoke tests** documented in `docs/agent-smoke-tests.md` for hand-driving an MCP-connected agent against the server: a broad first-time-user pass and a targeted allowlist-gating regression. The broad pass is what surfaced #49.
+
+## New Contributors
+
+- @MatthewOGoodman made their first contribution in #23
+- @rubalo made their first contribution in #25
+- @iclem made their first contribution in #28
+
+**Full Changelog**: https://github.com/alondmnt/joplin-mcp/compare/v0.7.1...v0.8.0
+
+---
+
+# [v0.7.1](https://github.com/alondmnt/joplin-mcp/releases/tag/v0.7.1)
+*Released on 2026-03-01T11:37:05Z*
+
+## Fixes
+
+- **Installer permission prompts** — `edit_note` is now correctly toggled by the Update permission, and `import_from_file` by the Write permission during interactive setup
+- Remove redundant import tool note from README (already covered in Tool Permissions section)
+
+**Full Changelog**: https://github.com/alondmnt/joplin-mcp/compare/v0.7.0...v0.7.1
+
+---
+
+# [v0.7.0](https://github.com/alondmnt/joplin-mcp/releases/tag/v0.7.0)
+*Released on 2026-02-27T03:16:07Z*
+
+## What's New
+
+- **Sorting support for find functions** — `find_notes`, `find_notes_with_tag`, and `find_notes_in_notebook` now accept `order_by` (`title`, `created_time`, `updated_time`) and `order_dir` (`asc`, `desc`) parameters
+- **Claude Code plugin** — Joplin orchestration skill for Claude Code with marketplace support
+
+## Other Changes
+
+- Remove dead code from `__init__.py`
+- Reorganise README with Supported Clients section
+
+**Full Changelog**: https://github.com/alondmnt/joplin-mcp/compare/v0.6.0...v0.7.0
+
+---
+
 # [v0.6.0](https://github.com/alondmnt/joplin-mcp/releases/tag/v0.6.0)
-*Released on 2026-02-10*
+*Released on 2026-02-10T00:44:21Z*
 
 - added: `edit_note` tool for precision text editing (find/replace, append, prepend) without full-body replacement
 - added: per-tool env var documentation (`JOPLIN_TOOL_<NAME>`)
@@ -15,7 +184,7 @@
 ---
 
 # [v0.5.0](https://github.com/alondmnt/joplin-mcp/releases/tag/v0.5.0)
-*Released on 2026-01-31*
+*Released on 2026-01-30T14:16:03Z*
 
 - added: path-based notebook resolution (e.g., `Parent/Child/Notebook`)
 - added: notebook suggestions on path resolution errors
