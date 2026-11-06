@@ -18,48 +18,9 @@ Notebook-path support in the dashboard YAML loader is the sole active priority. 
 
 Recently cleared: dashboard schema validation shipped (`408b754`); the mdsync round-trip tool shipped, committed (`bbacf38` + `43c2c81`), and was dogfooded end-to-end on 2026-07-28 (five plan notes pulled and pushed, drift detection reporting none) — its completed record is archived in `markdowns/session_archive/`.
 
-### Thread Order
+## Flags
 
-Top-to-bottom is recommended execution order. Threads are parallel by default; the one forced ordering is annotated.
-
-#### Notebook-path support in dashboard YAML
-
-Full-path notebook matching in `JoplinRestLoader` — the only thread with a blocked downstream consumer.
-
-#### joplin-dashboard global discoverability
-
-`bin/` wrappers + manifest entry so both `joplin-dashboard` and `joplin-mdsync` resolve outside the conda env.
-
-#### mdsync follow-ups
-
-One visual check on GFM table rendering; near-zero effort, closes out a shipped feature.
-
-#### Test suite hygiene
-
-Four long-standing failures that mask real regressions in every other thread's work.
-
-## 2. Active Threads
-
-### Notebook-path support in dashboard YAML  [plan] (#)
-
-Joplin REST search currently filters notebook by leaf name only; needs full-path matching in `JoplinRestLoader._build_query()` (`dashboard/loader.py:64-74`). Open cross-project blocker that job_search holds against joplin-mcp, tracked in `~/.claude/STATUS.md` under "Notebook-path support in dashboard YAML".
-
-#### Frame and plan full-path matching  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Decide the matching approach before touching the loader.
-- [ ] `/framing` on the approach — path-as-query syntax vs walking intermediate notebook nodes
-- [ ] Resolve whether fuzzy path matching is supported or exact paths are required (open question carried from 2026-05-15)
-- [ ] Write the plan in `markdowns/plans_draft/`
-- [ ] Check upstream's `notebook_utils.get_notebook_id_by_name` first: since v0.10.0 it resolves `Parent/Child` paths through the cached `NotebookResolver` (and filters by the allowlist), so the loader may only need to resolve the configured path to an ID and query by that ID
-
-#### Implement and test full-path matching  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Land the change and verify it against the real consumer configs.
-- [ ] Implement in `dashboard/loader.py`
-- [ ] Test against the job_search YAML configs that use nested notebooks
-- [ ] Confirm job_search can drop its leaf-name workaround, then resolve the user-global blocker
+Signals between skills, not threads: a `###` here is raised by one skill and cleared by another. The thread rebuild never touches this section.
 
 ### Reprioritize now!  [implement]
 
@@ -71,124 +32,59 @@ Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/
 - **Stale-thread review (proposals only, never auto-applied).** Untouched since 2026-05-15: "Fork enhancements" `[idea]`, "MCP packaging / distribution infrastructure" `[deferred]`, "CLAUDE.md cross-branch persistence" `[idea]`. Decide whether any should become `[superseded]`.
 - **No prioritization rubric exists.** RICE scoring this pass was uncalibrated. An interactive run can bootstrap `PRIORITIZATION_RUBRIC.md`; autonomous runs never author it.
 
+## 2. Active Threads
+
+### Notebook-path support in dashboard YAML  [plan] (#)
+
+Joplin REST search currently filters notebook by leaf name only; needs full-path matching in `JoplinRestLoader._build_query()` (`dashboard/loader.py:64-74`). Open cross-project blocker that job_search holds against joplin-mcp, tracked in `~/.claude/STATUS.md` under "Notebook-path support in dashboard YAML".
+→ markdowns/status_threads/notebook-path-support-in-dashboard-yaml_THREAD.md
+
 ## 3. Inactive Threads
 
 ### joplin-dashboard global discoverability  [queued]
 
 Wrapper at `bin/joplin-dashboard` + a `claude-wrangler-manifest.txt` entry so the CLI is on PATH from any non-conda shell. Design rationale — including the drafted wrapper script and the five rejected alternatives — in `markdowns/DESIGN_NOTES.md` → "Design: joplin-dashboard global discoverability". An interim hardcoded symlink is already in place from a job_search session; the installer will warn-and-skip on it unless run with `--force`.
-
-#### Author the dynamic-resolution wrapper  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Portable wrapper that resolves the conda env at invocation time.
-- [ ] Write `bin/joplin-dashboard` resolving the env via `conda info --base` (no hardcoded miniforge path)
-- [ ] `chmod +x bin/joplin-dashboard`
-
-#### Register and verify on PATH  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Install through claude-wrangler's universal symlink installer.
-- [ ] Add `claude-wrangler-manifest.txt` with `~/.claude/joplin-dashboard:bin/joplin-dashboard`
-- [ ] Run `~/projects/dev/claude-wrangler/install.sh --force ~/projects/dev/joplin-mcp` (force overrides the interim symlink)
-- [ ] Verify `joplin-dashboard --help` from a fresh non-conda shell
-- [ ] Add a one-line pointer in the CLAUDE.md dashboard section
-
-#### Extend the same treatment to joplin-mdsync  [ ]
-
-start: 2026-06-05 20:10; update: 2026-07-28 15:58
-The shipped mdsync CLI has the identical PATH problem; it was deferred to ride this thread.
-- [ ] Add a `bin/joplin-mdsync` wrapper alongside the dashboard one
-- [ ] Add its manifest entry so `joplin-mdsync` resolves outside the conda env
+→ markdowns/status_threads/joplin-dashboard-global-discoverability_THREAD.md
 
 ### mdsync follow-ups  [queued]
 
 Residual verification left over from the shipped mdsync subpackage (`bbacf38`). The feature itself is done, committed, and dogfooded; the completed record is archived in `markdowns/session_archive/SWEPT_20260728_1558.md`.
-
-#### Verify Joplin renders API-pushed GFM tables  [ ]
-
-start: 2026-06-05 20:10; update: 2026-07-28 15:58
-Confirm a GFM table survives the API round-trip visually; add a reformatter only if it does not.
-- [ ] Visually check test note "mdsync test" (Testing notebook, id `ac0f9049…`), which already contains a GFM table
-- [ ] Add a reformatter ONLY if the render is broken — do not pre-emptively build one
+→ markdowns/status_threads/mdsync-follow-ups_THREAD.md
 
 ### Test suite hygiene  [queued]
 
 Four test failures predate current work and have been verified on a clean tree (via `git stash`) in two separate sessions without being tracked anywhere. Surfaced by the 2026-07-28 cleanup from the 2026-06-06 and 2026-06-09 session records, where both sessions independently confirmed and then set them aside.
-
-#### Resolve four pre-existing test failures  [ ]
-
-start: 2026-07-28 15:58; update: 2026-07-28 15:58
-The full suite reports 1054 passed with these 4 failing; they are unrelated to recent feature work but mask genuine regressions.
-- [ ] 4 failures in `tests/test_import_utils.py` — timestamp handling
-- [x] 1 failure in `tests/test_config.py` — home-token leak (fixed upstream; gone after the v0.10.0 sync)
-- [ ] Decide per failure: fix, or mark `xfail` with a reason so a real regression is not hidden by an expected-red suite
+→ markdowns/status_threads/test-suite-hygiene_THREAD.md
 
 ### Repo housekeeping  [queued]
 
 Low-priority disposition of leftover scratch files now tracked at the repo root (committed in `41f8cb5`).
-
-#### Disposition of leftover scratch markdowns  [ ]
-
-start: 2026-06-06 11:00; update: 2026-07-28 15:58
-Two tracked scratch files have no permanent home; decide retention.
-- [ ] `SESSION-joplin-sync.md` — pasted transcript on iOS OneDrive sync recovery; lift any durable lesson into a CLAUDE.md Gotcha or a Joplin note, then delete
-- [ ] `markdowns/PR_DESCRIPTION_PR19_2026-03-30.md` — PR #19 closed 2026-04-06; likely archivable
+→ markdowns/status_threads/repo-housekeeping_THREAD.md
 
 ### CLAUDE.md cross-branch persistence  [superseded]
 
 Superseded 2026-11-06: handed to claude-wrangler as the single owner — its Inbox item "Revive or retire the cross-branch context-file carry" carries this thread's unique TODOs (survey alternatives, shared-vs-branch split, carry the thread-file directory too). Drop this thread once that item is picked up.
-
-#### Survey alternatives before implementing  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-The floating-file design should not be built until better options are ruled out.
-- [ ] `/framing` to survey alternatives — post-checkout hook, separate tracked branch, others
-- [ ] Define what is shared vs branch-specific — branch roles are now settled (merge-based sync; see CLAUDE.md Upstream Relationship)
-- [ ] Implement the chosen design, carrying STATUS.md as well as CLAUDE.md
+→ markdowns/status_threads/claude-md-cross-branch-persistence_THREAD.md
 
 ### Direct SQLite read layer  [idea]
 
 The Joplin REST API has no server-side filtering, so all filtering is Python-side post-fetch. A read-only SQLite layer over `~/.config/joplin-desktop/database.sqlite` would enable efficient filtered reads while keeping joppy/REST for writes. Caveat: assumes the server shares a host with Joplin Desktop. Design considerations — including the rejected option of contributing filter params upstream to Joplin itself — in `markdowns/DESIGN_NOTES.md` → "Design: Direct SQLite read layer". First consumer in waiting: the dashboard's `Loader` interface (`dashboard/loader.py`) was built so a `JoplinSqliteLoader` can drop in — see CLAUDE.md Learnings → Design Decisions, "Dashboard reads over REST, not SQLite", for the triggers that would justify it.
-
-#### Frame the hybrid read/write architecture  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Scope the split before committing to a second data path.
-- [ ] `/framing` on hybrid SQLite-read / REST-write architecture
-- [ ] Decide the preview/execute safety check — ID-set hash rather than the current weak `first_title` + `expected_count`
-- [ ] Write the plan
+→ markdowns/status_threads/direct-sqlite-read-layer_THREAD.md
 
 ### Fork enhancements  [idea]
 
 Wish-list of fork-local additions; not formally scoped.
-
-#### Candidate tool and API additions  [ ]
-
-start: 2026-05-15 22:00; update: 2026-11-05 20:05
-Unranked backlog — scope individually before starting any.
-- [ ] `get_recent_changes`: expose the Joplin events API
-- [ ] Resource / attachment management tools (upstream added read-only `get_note_resources` in #52; create/delete would be ours)
-- [ ] Document Joplin search operators in tool descriptions
+→ markdowns/status_threads/fork-enhancements_THREAD.md
 
 ### MCP packaging / distribution infrastructure  [deferred]
 
 Extract the Docker/install infrastructure from the `archive/bulk-operations-monolith` tag (`3de13d4`) into a new `MatthewOGoodman/mcp-docker-dev` repo, not yet created, as reusable infrastructure for any MCP project. Parked, not started. What the tag holds, and the reasoning, in `markdowns/DESIGN_NOTES.md` → "Design: MCP packaging / distribution infrastructure".
-
-#### Extract Docker and install infrastructure  [ ]
-
-start: 2026-05-15 22:00; update: 2026-11-05 14:54
-Move the archived snapshot's reusable pieces into their own repo.
-- [ ] Extract from the `archive/bulk-operations-monolith` tag into the new repo; upstream now ships its own Dockerfile, `bootstrap.py` and PyPI/registry publishing, so scope this to what upstream lacks (hot-reload dev container, deployment switcher, `DOCKER_DEV.md` lessons)
+→ markdowns/status_threads/mcp-packaging-distribution-infrastructure_THREAD.md
 
 ### Joppy `utcfromtimestamp` deprecation warning  [deferred]
 
 `joppy/data_types.py:116` emits `DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version.` on every `joplin-dashboard` invocation. Cosmetic CLI noise; surfaced from a job_search session 2026-05-15. Deferred 2026-05-18 in favor of waiting on an upstream joppy fix — deprecated in CPython 3.12 with no removal version announced yet.
-
-#### Decide how to silence the deprecation  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Revisit if joppy has not fixed it by the time a CPython removal version is announced.
-- [ ] Choose one: bump `joppy` (if fixed upstream), suppress the warning at joplin-mcp's entry point, or submit an upstream PR
+→ markdowns/status_threads/joppy-utcfromtimestamp-deprecation-warning_THREAD.md
 
 ## 4. Deliverables and Deadlines
 
