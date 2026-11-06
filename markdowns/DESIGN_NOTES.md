@@ -97,17 +97,6 @@ The Joplin REST API has no server-side filtering — no WHERE-clause params, no 
 
 **Caveat:** Direct SQLite access assumes local filesystem (same host as Joplin Desktop). Remote HTTP MCP transport would break this, but would also break `backup_database` and other filesystem-dependent features — a broader re-engineering at that point.
 
-## Design: Upstream sync strategy (open questions)
-
-PR #23 merged into alondmnt/joplin-mcp on 2026-04-17 (`restore_from_trash` + `find_notes(trash=True)` + docstring fixes). Our `main` and `feature/dev` don't have these changes from upstream's side. Open questions before settling on a sync workflow:
-
-- Is our code structure clean enough to rebase on upstream? Our 12 tools in `tools/*.py` are additive, but `fastmcp_server.py` and `formatting.py` have modifications.
-- `git merge upstream/main` vs `git rebase --onto upstream/main` for our branches?
-- How to handle divergence if alondmnt modifies files we also modified?
-- Any other upstream changes since v0.7.1 besides PR #23?
-
-Affects both `main` and `feature/dev`. The goal is to pull upstream changes readily.
-
 ## Design: MCP packaging / distribution infrastructure (parked)
 
 The `archive/bulk-operations-monolith` tag (`3de13d4`, the old monolithic branch) contains Docker development toolkit, deployment modes, install enhancements, and config management (`mcp-config-manager.sh`). The plan is to extract the reusable parts into a new `MatthewOGoodman/mcp-docker-dev` repo (not yet created) as infrastructure for any MCP project. Upstream v0.8.0+ ships its own hardened Dockerfile, `docker-compose.yml`, cross-platform `bootstrap.py`, PyPI and MCP Registry publishing, and a Claude Code plugin, so only the hot-reload dev container, the deployment-mode switcher and the `DOCKER_DEV.md` debugging lessons remain unique; the code is fastmcp v2-era and would need porting. A container also cannot reach the host filesystem that `backup_database` and mdsync need without explicit mounts. Status: parked, not started.

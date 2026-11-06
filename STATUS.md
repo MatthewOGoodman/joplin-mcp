@@ -8,7 +8,7 @@
 
 ### Brief Description
 
-FastMCP-based MCP server giving AI assistants access to Joplin notes; fork of alondmnt/joplin-mcp v0.7.1 with 12 added tools (bulk ops, trash, revisions, backup), a dashboard subpackage (config-driven Joplin → Markdown table renderer), and an mdsync subpackage (round-trip local `.md` file ↔ Joplin note).
+FastMCP-based MCP server giving AI assistants access to Joplin notes; fork of alondmnt/joplin-mcp v0.10.0 with 11 added tools (bulk ops, trash listing, revisions, backup), a dashboard subpackage (config-driven Joplin → Markdown table renderer), and an mdsync subpackage (round-trip local `.md` file ↔ Joplin note).
 
 ## 1. Prioritization
 
@@ -34,17 +34,9 @@ Full-path notebook matching in `JoplinRestLoader` — the only thread with a blo
 
 One visual check on GFM table rendering; near-zero effort, closes out a shipped feature.
 
-#### Upstream contributions to alondmnt/joplin-mcp
-
-Issues #21 and #22 — extensions the maintainer has already agreed to accept.
-
 #### Test suite hygiene
 
-Five long-standing failures that mask real regressions in every other thread's work.
-
-#### Upstream sync strategy  (blocks: CLAUDE.md cross-branch persistence)
-
-Settle rebase-vs-merge before the fork's divergence grows; it also decides the branch roles the cross-branch work waits on.
+Four long-standing failures that mask real regressions in every other thread's work.
 
 ## 2. Active Threads
 
@@ -59,6 +51,7 @@ Decide the matching approach before touching the loader.
 - [ ] `/framing` on the approach — path-as-query syntax vs walking intermediate notebook nodes
 - [ ] Resolve whether fuzzy path matching is supported or exact paths are required (open question carried from 2026-05-15)
 - [ ] Write the plan in `markdowns/plans_draft/`
+- [ ] Check upstream's `notebook_utils.get_notebook_id_by_name` first: since v0.10.0 it resolves `Parent/Child` paths through the cached `NotebookResolver` (and filters by the allowlist), so the loader may only need to resolve the configured path to an ID and query by that ID
 
 #### Implement and test full-path matching  [ ]
 
@@ -76,7 +69,6 @@ start: 2026-06-06 11:00; update: 2026-07-28 15:58
 Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/project-prioritize` clears this thread.
 - **Replan, do not re-rank — "Notebook-path support in dashboard YAML".** It has been the top priority since 2026-05-15 with zero commits against it in that time, and both the 2026-06-06 and 2026-06-09 session records note it as "remains open — untouched this session". Its first step is a `/framing`, so the thread is stalled at a decision, not at implementation. Consider either scheduling that framing explicitly, or descoping to exact-path-only matching that unblocks job_search without settling the fuzzy-matching question.
 - **Stale-thread review (proposals only, never auto-applied).** Untouched since 2026-05-15: "Fork enhancements" `[idea]`, "MCP packaging / distribution infrastructure" `[deferred]`, "CLAUDE.md cross-branch persistence" `[idea]`. Decide whether any should become `[superseded]`.
-- **Backlog item possibly mis-filed.** A blind regrouping pass noted that `update_notebook(parent_id)` under "Fork enhancements" is the sibling of Issue #21's `notebook_name` on `update_note` — the same hierarchy-move surface — so it may belong with the upstream-contributions thread rather than the fork-local backlog. Left in place; needs a call on whether it is an upstream PR or a fork-local addition.
 - **No prioritization rubric exists.** RICE scoring this pass was uncalibrated. An interactive run can bootstrap `PRIORITIZATION_RUBRIC.md`; autonomous runs never author it.
 
 ## 3. Inactive Threads
@@ -121,33 +113,15 @@ Confirm a GFM table survives the API round-trip visually; add a reformatter only
 
 ### Test suite hygiene  [queued]
 
-Five test failures predate current work and have been verified on a clean tree (via `git stash`) in two separate sessions without being tracked anywhere. Surfaced by the 2026-07-28 cleanup from the 2026-06-06 and 2026-06-09 session records, where both sessions independently confirmed and then set them aside.
+Four test failures predate current work and have been verified on a clean tree (via `git stash`) in two separate sessions without being tracked anywhere. Surfaced by the 2026-07-28 cleanup from the 2026-06-06 and 2026-06-09 session records, where both sessions independently confirmed and then set them aside.
 
-#### Resolve five pre-existing test failures  [ ]
+#### Resolve four pre-existing test failures  [ ]
 
 start: 2026-07-28 15:58; update: 2026-07-28 15:58
-The full suite reports 603 passed with these 5 failing; they are unrelated to recent feature work but mask genuine regressions.
+The full suite reports 1054 passed with these 4 failing; they are unrelated to recent feature work but mask genuine regressions.
 - [ ] 4 failures in `tests/test_import_utils.py` — timestamp handling
-- [ ] 1 failure in `tests/test_config.py` — home-token leak
+- [x] 1 failure in `tests/test_config.py` — home-token leak (fixed upstream; gone after the v0.10.0 sync)
 - [ ] Decide per failure: fix, or mark `xfail` with a reason so a real regression is not hidden by an expected-red suite
-
-### Upstream contributions to alondmnt/joplin-mcp  [queued]
-
-PR #23 merged 2026-04-17 (`restore_from_trash` + `find_notes(trash=True)`). Two issues alondmnt opened remain, both reflecting their preference for extending existing interfaces over adding tools. Workflow: branch from `upstream/main` as `pr/<topic>`, minimal and focused — see CLAUDE.md "Upstream Contribution Workflow".
-
-#### Issue #21 — notebook_name on update_note  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Fold note-moving into the existing update interface instead of a separate `move_note`.
-- [ ] Add `notebook_name` to `update_note`
-- [ ] Submit as a focused PR from `upstream/main`
-
-#### Issue #22 — bulk tagging via existing tools  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Extend the existing tag interface rather than shipping `bulk_tag_notes` upstream.
-- [ ] Extend `tag_note` / `untag_note` to accept `str | List[str]`
-- [ ] Submit as a focused PR from `upstream/main`
 
 ### Repo housekeeping  [queued]
 
@@ -160,18 +134,6 @@ Two tracked scratch files have no permanent home; decide retention.
 - [ ] `SESSION-joplin-sync.md` — pasted transcript on iOS OneDrive sync recovery; lift any durable lesson into a CLAUDE.md Gotcha or a Joplin note, then delete
 - [ ] `markdowns/PR_DESCRIPTION_PR19_2026-03-30.md` — PR #19 closed 2026-04-06; likely archivable
 
-### Upstream sync strategy  [idea]
-
-How to pull alondmnt's `upstream/main` changes onto our `main` and `feature/dev`. No mechanism chosen yet. Our 12 tools are additive, but `fastmcp_server.py` and `formatting.py` carry modifications that could conflict. Open questions and deliberation in `markdowns/DESIGN_NOTES.md` → "Design: Upstream sync strategy".
-
-#### Decide rebase vs merge for the fork  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Settle the sync mechanism before the divergence grows.
-- [ ] `/framing` or `/research` on `git merge upstream/main` vs `git rebase --onto upstream/main`
-- [ ] Check upstream for any changes since v0.7.1 beyond PR #23
-- [ ] Decide how to handle divergence in files both sides modified
-
 ### CLAUDE.md cross-branch persistence  [idea]
 
 CLAUDE.md disappears on checkout to clean PR branches, so Claude Code loses project context mid-session. The current proposal — a `## PROJ_SHARED_CLAUDE` section extracted to an untracked floater — is provisional and explicitly not final. Proposed design in `markdowns/DESIGN_NOTES.md` → "Design: CLAUDE.md cross-branch persistence".
@@ -181,7 +143,7 @@ CLAUDE.md disappears on checkout to clean PR branches, so Claude Code loses proj
 start: 2026-05-15 22:00; update: 2026-07-28 15:58
 The floating-file design should not be built until better options are ruled out.
 - [ ] `/framing` to survey alternatives — post-checkout hook, separate tracked branch, others
-- [ ] Define what is shared vs branch-specific — blocked until branch roles are clearer, which the "Upstream sync strategy" thread settles; do not start implementation before it lands
+- [ ] Define what is shared vs branch-specific — branch roles are now settled (merge-based sync; see CLAUDE.md Upstream Relationship)
 - [ ] Implement the chosen design, carrying STATUS.md as well as CLAUDE.md
 
 ### Direct SQLite read layer  [idea]
@@ -202,11 +164,10 @@ Wish-list of fork-local additions; not formally scoped.
 
 #### Candidate tool and API additions  [ ]
 
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
+start: 2026-05-15 22:00; update: 2026-11-05 20:05
 Unranked backlog — scope individually before starting any.
-- [ ] `update_notebook()`: add `parent_id` / `parent_notebook` for hierarchy moves
 - [ ] `get_recent_changes`: expose the Joplin events API
-- [ ] Resource / attachment management tools
+- [ ] Resource / attachment management tools (upstream added read-only `get_note_resources` in #52; create/delete would be ours)
 - [ ] Document Joplin search operators in tool descriptions
 
 ### MCP packaging / distribution infrastructure  [deferred]
@@ -239,13 +200,6 @@ Cross-project commitment to job_search — full-path notebook matching in `Jopli
 - No hard date; job_search is unblocked-but-degraded on a leaf-name workaround
 - Tracked as a cross-project blocker in `~/.claude/STATUS.md`; delivered by the "Notebook-path support in dashboard YAML" thread
 
-#### Upstream PRs for issues #21 and #22  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Two extensions alondmnt opened issues for and has agreed to accept.
-- No hard deadline
-- Delivered by the "Upstream contributions to alondmnt/joplin-mcp" thread
-
 ## 5. Blockers
 
 No project-local blockers.
@@ -253,13 +207,6 @@ No project-local blockers.
 The cross-project blocker "Notebook-path support in dashboard YAML" is one this project OWNS — job_search is blocked on us, we are not blocked on anyone — so it lives in `~/.claude/STATUS.md` and in § 4 Deliverables, and is deliberately not mirrored here.
 
 ## 6. Read/Research Topics
-
-#### Rebase vs merge for fork upstream sync  [ ]
-
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
-Read up before choosing the sync mechanism for our fork.
-- Read the git docs on `rebase --onto`
-- Feeds the "Upstream sync strategy" thread
 
 #### Cross-branch context-file persistence prior art  [ ]
 
@@ -270,14 +217,15 @@ Survey how other repos keep a context file alive across branch switches.
 
 ## 7. Inbox
 
-### Branch cleanup and upstream v0.10.0 sync  [hand-off]
+### Branch cleanup and upstream v0.10.0 sync  [x]
 
-start: 2026-11-05 11:49; update: 2026-11-05 11:49
+start: 2026-11-05 11:49; update: 2026-11-05 20:05
 Prune merged and frozen branches, then bring main and feature/dev forward from v0.7.1 to upstream v0.10.0.
 - Hand-off from a job_search session; branch assessment done read-only on 2026-11-05.
 - Branch cleanup done 2026-11-05: `pr/restore-from-trash`, the bulk-ops monolith branch and `extract/mcp-docker-dev` deleted locally and on origin; tag `archive/bulk-operations-monolith` (`3de13d4`) keeps the monolith and Docker work reachable. Remote branches are now `main` and `feature/dev`.
-- Upstream fetched (v0.10.0, `b84c313`, 124 commits ahead). Sync mini-plan written, not yet approved: `markdowns/plans_draft/PLAN_upstream-v0.10.0-sync.md`. Upstream implemented #21 and #22 itself, so the "Upstream contributions" thread closes when the sync lands.
-PLAN: markdowns/plans_draft/HANDOFF_20261105_114933_branch-cleanup-upstream-sync.md
+- Upstream fetched (v0.10.0, `b84c313`, 124 commits ahead). Sync plan: `markdowns/plans_completed/PLAN_upstream-v0.10.0-sync.md`. Upstream implemented #21 and #22 itself, so the "Upstream contributions" thread closes when the sync lands.
+- Done 2026-11-05: `main` fast-forwarded to `d4f6e19` and pushed; merged into `feature/dev` as `2b04329` (mdsync rewired onto `note_view` and the allowlist); `joplin-mcp` conda env upgraded to fastmcp 3.4.11; CLAUDE.md Upstream Relationship, Tool Inventory and pins updated; the upstream-contributions and upstream-sync threads closed.
+PLAN: markdowns/plans_completed/HANDOFF_20261105_114933_branch-cleanup-upstream-sync.md
 
 #### Thread-vs-design-note content split  [ ]
 

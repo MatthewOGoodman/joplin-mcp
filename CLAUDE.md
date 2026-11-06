@@ -1,10 +1,8 @@
 # joplin-mcp
 
-
-FastMCP-based MCP server giving AI assistants access to Joplin notes. A fork of alondmnt/joplin-mcp v0.7.1, adding 12 tools (bulk operations, trash, revisions, database backup), a dashboard subpackage that renders Joplin queries to Markdown tables, and an mdsync subpackage that round-trips local `.md` files against Joplin notes.
+FastMCP-based MCP server giving AI assistants access to Joplin notes. A fork of alondmnt/joplin-mcp v0.10.0, adding 11 tools (bulk operations, trash listing, revisions, database backup), a dashboard subpackage that renders Joplin queries to Markdown tables, and an mdsync subpackage that round-trips local `.md` files against Joplin notes.
 
 *Schema: CLAUDE_MD_SCHEMA v2.2 · migrated 2026-07-28*
-
 
 ## Project
 
@@ -28,7 +26,7 @@ The fork exists to carry tools upstream declined to take as-is; see "Upstream Re
 
 | Branch | Purpose | Status |
 |--------|---------|--------|
-| `main` | Clean codebase. alondmnt v0.7.1 modular structure + our 12 tools + fixes. Always deployable. | Active |
+| `main` | Clean codebase. alondmnt v0.10.0 + our fork tools, rewired onto upstream's interfaces. Always deployable. | Active |
 | `feature/dev` | Ongoing development. CLAUDE.md, new features, fixes. Merges to main. | Active, primary work branch |
 | `pr/*` | Per-contribution branches for upstream PRs. Created from `upstream/main`, minimal and focused; deleted once the PR merges. | Created as needed; none open |
 | tag `archive/bulk-operations-monolith` | `3de13d4`: the original monolithic dev branch, whose tools were re-ported onto v0.7.1 as `main`. It also holds the Docker/install work (dev/prod Dockerfile, Makefile, `docker_build.py`, `switch_mode.py`, `DOCKER_DEV.md`) that the "MCP packaging / distribution infrastructure" thread would start from. Read-only reference. | Tag, pushed to `origin` |
@@ -39,27 +37,29 @@ The fork exists to carry tools upstream declined to take as-is; see "Upstream Re
 
 - **Original Repository**: https://github.com/alondmnt/joplin-mcp
 - **Our Fork**: https://github.com/MatthewOGoodman/joplin-mcp
-- **Upstream version**: v0.7.1 (`1a7f40e`)
-- **Our main**: v0.7.1 + 12 new tools (4 commits on top of upstream)
+- **Upstream version**: v0.10.0 (`b84c313`)
+- **Our main**: v0.10.0 merged onto the fork (`e033310`), then the fork tools rewired onto upstream's interfaces (`d4f6e19`). `feature/dev` carries `main` plus the dashboard and mdsync subpackages.
+- **Sync mechanism**: merge `upstream/main` into `main`, then `main` into `feature/dev`. Never rebase — both branches are public. Build each sync on a throwaway branch in an ephemeral `git worktree` so the editable install on `feature/dev` keeps serving the live MCP server, and fast-forward `main` only after the suite and the live smoke tests pass.
 
-### PR #19 Status (closed 2026-04-06)
+### What upstream absorbed
 
-PR was declined — alondmnt prefers extending existing interfaces over new tools. He opened three issues for contributions he would accept:
-- **#20 — Trash listing**: Fold into `find_notes(trash=True)` instead of separate `list_trash`
-- **#21 — Moving notes**: Add `notebook_name` to `update_note` instead of separate `move_note`
-- **#22 — Bulk tagging**: Extend `tag_note`/`untag_note` to accept `str | List[str]` instead of separate `bulk_tag_notes`
+Upstream implemented the three extensions it asked us for in issues #20–#22, plus our `restore_from_trash` (PR #23). The fork keeps the old tool names as aliases onto the upstream interfaces so existing callers keep working:
 
-**Accepted for separate PR:** `restore_from_trash` with three changes:
-- Add `_clear_note_cache()` after the mutation
-- Rename test file to `test_*.py` for pytest discovery
-- Use uppercase keys (`OPERATION:`, `STATUS:`) to match existing output format
+| Fork tool | Now delegates to | Upstream change |
+|---|---|---|
+| `move_note` | `update_note(notebook_name=…)` when given a name or path; given a notebook ID, the same code as `bulk_move_notes` | #21 |
+| `bulk_tag_notes` | `tag_note(note_id=[…], tag_name=[…])` | #22 |
+| `list_trash` | notes half: `find_notes("*", trash=True)`; trashed notebooks are still listed by fork code, since upstream cannot list them | #20 |
+| `restore_from_trash` | upstream's own implementation (ours removed) | PR #23 |
+
+The remaining fork tools follow upstream's conventions where they apply: `bulk_move_notes` and `strip_note_tags` take one ID or a list in `note_id` and report in `tag_note`'s format, and every fork tool enforces the notebook allowlist the way upstream's tools do.
 
 ### Upstream Contribution Workflow
 
-For PRs to alondmnt, create a branch from `upstream/main`:
+For PRs to alondmnt, create a branch from `upstream/main`, minimal and matching their conventions:
 ```bash
 git fetch upstream
-git checkout -b fix/restore-from-trash upstream/main
+git checkout -b pr/<topic> upstream/main
 # Make changes, test, submit PR to alondmnt/joplin-mcp
 ```
 
@@ -83,7 +83,7 @@ pip install -e ".[dev]" # includes pytest, black, ruff, mypy
 
 ## Architecture
 
-FastMCP-based MCP server providing AI assistants access to Joplin notes. Based on alondmnt's v0.7.1 modular structure with our additions.
+FastMCP-based MCP server providing AI assistants access to Joplin notes. Based on alondmnt's v0.10.0 modular structure with our additions.
 
 ### Code
 
@@ -91,25 +91,28 @@ How the server is organized and how a request flows through it: the shared infra
 
 #### Tool Inventory
 
-38 tools are defined in total. Which of them a running server actually exposes depends on the per-tool permissions in the active config — see "Configuration" below.
+40 tools are defined in total. Which of them a running server actually exposes depends on the per-tool permissions in the active config — see "Configuration" below. Fork tools are marked †; mdsync tools ‡.
 
-**Read-only (14 tools):**
+**Read-only (15 tools):**
 - **System**: `ping_joplin`
-- **Note Retrieval**: `get_note` (smart TOC/section/line reading), `get_links` (outgoing + backlinks)
-- **Search**: `find_notes`, `find_notes_with_tag`, `find_notes_in_notebook`, `find_in_note`, `get_all_notes`
+- **Note Retrieval**: `get_note` (smart TOC/section/line reading), `get_links` (outgoing + backlinks), `get_note_resources` (attachments)
+- **Search**: `find_notes` (`trash=True` searches the trash), `find_notes_with_tag`, `find_notes_in_notebook`, `find_in_note`, `get_all_notes`
 - **Notebooks and Tags**: `list_notebooks`, `list_tags`, `get_tags_by_note`
-- **Bulk Preview**: `search_and_bulk_update_preview`
-- **Trash**: `list_trash`
-- **History**: `get_note_history`
+- **Bulk Preview**: `search_and_bulk_update_preview` †
+- **Trash**: `list_trash` † (notes via `find_notes`, plus trashed notebooks)
+- **History**: `get_note_history` †
 
-**Write operations (24 tools):**
-- **Notes**: `create_note`, `update_note`, `edit_note`, `delete_note` (soft-delete), `move_note`
-- **Bulk**: `bulk_move_notes`, `search_and_bulk_update_execute`, `strip_note_tags`, `bulk_tag_notes`
+**Write operations (25 tools):**
+- **Notes**: `create_note`, `update_note` (`notebook_name` moves the note), `edit_note`, `delete_note` (soft-delete), `move_note` † (alias)
+- **Bulk**: `bulk_move_notes` † (one ID or a list), `search_and_bulk_update_execute` †, `strip_note_tags` † (one ID or a list), `bulk_tag_notes` † (alias of list-input `tag_note`)
 - **Notebooks**: `create_notebook`, `update_notebook`, `delete_notebook` (soft-delete)
-- **Tags**: `create_tag`, `update_tag`, `delete_tag` (**permanent**), `tag_note`, `untag_note`
-- **Recovery**: `restore_from_trash`, `restore_note_revision`, `manually_backup_note`
-- **Backup**: `backup_database`
-- **File round-trip (mdsync)**: `update_note_from_file`, `push_md_file`, `pull_note_to_file` (pull is read-only on Joplin but writes local files; all assume server and files share a host)
+- **Tags**: `create_tag`, `update_tag`, `delete_tag` (**permanent**), `tag_note`, `untag_note` (both accept one ID/name or lists)
+- **Recovery**: `restore_from_trash`, `restore_note_revision` †, `manually_backup_note` †
+- **Backup**: `backup_database` †
+- **Import**: `import_from_file` (bulk file ingest; disabled by default)
+- **File round-trip (mdsync)**: `update_note_from_file` ‡, `push_md_file` ‡, `pull_note_to_file` ‡ (pull is read-only on Joplin but writes local files; all assume server and files share a host)
+
+With the default permissions, 33 tools are enabled and 7 disabled (`delete_note`, `delete_notebook`, `delete_tag`, `get_all_notes`, `import_from_file`, `update_notebook`, `update_tag`).
 
 #### Key Patterns
 
@@ -118,6 +121,9 @@ How the server is organized and how a request flows through it: the shared infra
 - **Field registry**: `JOPLIN_NOTE_FIELDS` in `field_helpers.py` — maps field names to type converters. Used by bulk update tools.
 - **Tool permissions**: Controlled via config file (`joplin-mcp.json`). Tools default to enabled/disabled per `DEFAULT_TOOLS` in `config.py`.
 - **Safety**: `delete_note`/`delete_notebook` soft-delete to trash. `permanent=1` intentionally not exposed. `search_and_bulk_update_execute` requires preview first. Auto-backup revisions before title/body overwrites.
+- **Notebook allowlist**: when `get_config().has_notebook_allowlist`, every tool checks the notebook a note lives in (or is being written to) before acting — upstream's tools via `notebook_utils.validate_notebook_access` / `is_notebook_accessible`, fork tools via `field_helpers.validate_notebook_access_for_note` (note ID → its notebook), mdsync via `transport._check_access`. A denial raises `AllowlistDeniedError`; bulk tools record it as a per-note failure and carry on.
+- **Writes keep the caches coherent**: note writes go through `note_view.modify_note(client, id, **fields)`, which clears the single-note cache; notebook creation goes through `notebook_resolver.add_notebook`, since the notebook list is cached for 90 s.
+- **Aliases call upstream tools through `.fn`**: `@create_tool` turns a function into a `FunctionTool`, so a fork alias delegates with `await update_note.fn(...)` / `await tag_note.fn(...)` rather than calling the tool object.
 
 #### Configuration
 
@@ -223,12 +229,12 @@ The `joplin_mcp.mdsync` subpackage round-trips a local .md file ↔ a Joplin not
 | `src/joplin_mcp/tools/notebooks.py` | Notebook CRUD (alondmnt's) |
 | `src/joplin_mcp/tools/tags.py` | Tag CRUD + tag_note/untag_note (alondmnt's) |
 | `src/joplin_mcp/tools/tags_bulk.py` | **Our additions**: bulk_tag_notes, strip_note_tags |
-| `src/joplin_mcp/tools/trash.py` | **Our additions**: list_trash, restore_from_trash |
+| `src/joplin_mcp/tools/trash.py` | list_trash (ours: notes via find_notes, plus trashed notebooks) and restore_from_trash (upstream's) |
 | `src/joplin_mcp/tools/notes_revisions.py` | **Our additions**: get_note_history, restore_note_revision, manually_backup_note |
 | `src/joplin_mcp/tools/notes_files.py` | **Our addition**: update_note_from_file, push_md_file, pull_note_to_file (thin wrappers over `mdsync/`) |
 | `src/joplin_mcp/tools/backup_database.py` | **Our addition**: backup_database |
 | `src/joplin_mcp/imports/` | Upstream (alondmnt): `import_from_file` + MarkdownImporter (bulk file ingest; distinct from mdsync round-trip) |
-| `src/joplin_mcp/tools/field_helpers.py` | **Our addition**: JOPLIN_NOTE_FIELDS registry, _search_notes, _parse_update_params |
+| `src/joplin_mcp/tools/field_helpers.py` | **Our addition**: JOPLIN_NOTE_FIELDS registry, _search_notes (allowlist-filtered), _parse_update_params, validate_notebook_access_for_note |
 | `src/joplin_mcp/dashboard/` | **Our addition**: dashboard subpackage (config-driven Joplin → Markdown table renderer). See "Dashboard Subpackage" below. |
 | `src/joplin_mcp/mdsync/` | **Our addition**: mdsync subpackage (round-trip .md file ↔ Joplin note; `joplin-mdsync` CLI). See "Mdsync Subpackage" below. |
 
@@ -239,9 +245,9 @@ The `joplin_mcp.mdsync` subpackage round-trips a local .md file ↔ a Joplin not
 Dependency versions are constrained in `pyproject.toml`, and the constraint style is deliberate rather than uniform. There is no lockfile — the bounds below are the whole reproducibility story.
 
 - **Python:** `requires-python = ">=3.10"`.
-- **Major-bounded, for the fast-moving MCP stack:** `mcp>=1,<2`, `fastmcp>=2,<3`, `pydantic>=2,<3`, `httpx>=0.24,<1`, `jsonschema>=4.18,<5`. These carry an upper bound because a major bump in any of them is expected to break us. The `jsonschema` floor is specifically `4.18`, the release that made `Draft202012Validator` the default.
-- **Floor-only, for stable libraries:** `joppy`, `PyYAML`, `beautifulsoup4`, `markdownify`, `diff-match-patch`, `python-frontmatter`, `typing-extensions`. A new major here is not expected to break us; if one does, add an upper bound at that point rather than pre-emptively.
-- **Version number tracks upstream.** `version = "0.7.1"` is alondmnt's release, not a fork version — our additions ride on top without bumping it. Read our divergence from git (commits since `1a7f40e`), not from this field.
+- **Major-bounded, for the fast-moving MCP stack:** `mcp>=1,<2`, `fastmcp>=3,<4,!=3.3.1`, `pydantic>=2,<3`, `httpx>=0.24,<1`, `jsonschema>=4.18,<5`. These carry an upper bound because a major bump in any of them is expected to break us. The `jsonschema` floor is specifically `4.18`, the release that made `Draft202012Validator` the default.
+- **Floor-only, for stable libraries:** `joppy`, `PyYAML`, `pathspec`, `beautifulsoup4`, `markdownify`, `diff-match-patch`, `python-frontmatter`, `typing-extensions`. A new major here is not expected to break us; if one does, add an upper bound at that point rather than pre-emptively.
+- **Version number tracks upstream.** `version = "0.10.0"` is alondmnt's release, not a fork version — our additions ride on top without bumping it. Read our divergence from git (commits since `b84c313`), not from this field.
 
 The install is editable (`pip install -e .`), so a source edit takes effect on the next `/mcp` reload with no reinstall. That is what makes the dev loop work, and it is also why a second, non-editable install of this package (via pipx or similar) would silently break it.
 
@@ -313,10 +319,20 @@ Durable knowledge. Append-only.
 - **Chosen approach:** Keep manual backups unbounded and document the asymmetry in the docstrings instead of pruning them. A manual backup is taken deliberately, before something risky, so the user wants it retained. The required `label` argument makes each one self-describing, which is what actually made the folder navigable.
 - **Alternatives rejected:** an automated prune helper — the user wants explicit control over retention and wants existing snapshots kept. Revisit only if folder size becomes a problem again.
 
+#### Upstream sync by merge, staged in an ephemeral worktree
+
+- **Date:** 2026-11-05
+- **Commit:** `e033310` (upstream merge), `d4f6e19` (fork tools rewired), `2b04329` (into `feature/dev`)
+- **Files:** `src/joplin_mcp/tools/notes_bulk.py`, `tags_bulk.py`, `trash.py`, `notes_revisions.py`, `field_helpers.py`, `mdsync/transport.py`
+- **Problem:** The fork had sat on v0.7.1 while upstream moved 124 commits to v0.10.0: fastmcp v3, a per-tool notebook allowlist, a notebook-name cache, and its own versions of three tools we had proposed. `fastmcp_server.py`, `formatting.py`, `notes.py` and `config.py` were modified on both sides, and the live MCP server runs from an editable install on `feature/dev`.
+- **Chosen approach:** Merge `upstream/main` into `main` on a throwaway branch inside a `git worktree` with its own venv, rewire the fork tools onto the upstream interfaces there (aliases for `move_note` / `bulk_tag_notes` / `list_trash`, list inputs for `bulk_move_notes` / `strip_note_tags`, allowlist checks everywhere), and fast-forward `main` only after the full suite, a dead-port probe and an in-process live smoke test pass. Then merge `main` into `feature/dev` and upgrade the server's conda env in the same step, because the editable install switches to fastmcp-v3 code the moment the merge lands.
+- **Alternatives rejected:** rebasing either branch (both are public, so every downstream clone would diverge); syncing directly on `feature/dev` (would break the live server mid-merge); dropping the fork tools upstream superseded outright (breaks existing callers, where an alias costs a few lines).
+
 ### Gotchas
 
 - **PyYAML `default_flow_style=None` collapses leaf-only mappings** (2026-06-06): a dict whose values are all scalars renders as a single flow line (`key: {a: 1, b: 2}`), while the presence of any nested collection switches it to block style — so the output FORMAT changes based on the CONTENT. The mdsync block silently went one-line whenever `tags` was absent. Mitigation: use `default_flow_style=False` for any canonical line-oriented machine output.
 - **This repo's HEAD is not clean under the installed black** (2026-06-09): `git show HEAD:src/joplin_mcp/tools/backup_database.py | black --check -` reports "would reformat" under black 26.1.0, and `tests/pr_tests.py` already ships 9 `I001` isort violations from its inline-per-test imports. The committed code predates this formatter version, so the project does not in practice enforce it. Mitigation: never run a blanket `black` / `ruff --fix` as "cleanup" — it produces a large diff across unrelated pre-existing lines. Match the surrounding multi-line style for new code and stay within 88 columns.
+- **Upgrading this env from fastmcp 2 to 3 left an empty `fastmcp/` package** (2026-11-05): fastmcp 3 ships as two distributions, `fastmcp` and `fastmcp-slim`, that install into the same `fastmcp/` directory. After `pip install -e ".[dev]"` replaced fastmcp 2.12.3, the directory had no `__init__.py`, so `fastmcp` imported as an empty namespace package (`no attribute '__version__'`, then `No module named 'fastmcp.exceptions'` from `tests/conftest.py`). Mitigation: `pip install --force-reinstall --no-deps fastmcp==<v> fastmcp-slim==<v>`, then `pip check`.
 
 ### Dead Ends
 
