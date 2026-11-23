@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, feature/dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest and newest supported Python. The second leg runs west of UTC
+        # so a test that silently assumes a UTC clock fails here, not on a
+        # contributor's laptop.
+        include:
+          - python-version: "3.10"
+            tz: UTC
+          - python-version: "3.13"
+            tz: America/Los_Angeles
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # No Joplin Desktop is available here: the suite mocks the API, and the
+      # live end-to-end tests under tests/e2e/ are opt-in (--run-e2e).
+      - name: Run tests
+        run: pytest
