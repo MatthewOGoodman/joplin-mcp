@@ -574,8 +574,9 @@ class TestParseFlexibleTimestamp:
         """Should parse numeric millisecond timestamp."""
         from joplin_mcp.imports.importers.utils.timestamp_utils import parse_flexible_timestamp
 
-        # Jan 1, 2023 00:00:00 UTC in milliseconds
-        timestamp_ms = 1672531200000
+        # Jul 1, 2023 00:00:00 UTC in milliseconds. Mid-year, because the
+        # conversion yields local time and a Jan 1 epoch is still 2022 west of UTC.
+        timestamp_ms = 1688169600000
         result = parse_flexible_timestamp(timestamp_ms)
 
         assert result is not None
@@ -613,7 +614,7 @@ class TestTimestampToDatetime:
         """Should convert milliseconds to datetime."""
         from joplin_mcp.imports.importers.utils.timestamp_utils import timestamp_to_datetime
 
-        timestamp_ms = 1672531200000  # Jan 1, 2023
+        timestamp_ms = 1688169600000  # Jul 1, 2023 UTC; 2023 in every timezone
         result = timestamp_to_datetime(timestamp_ms)
 
         assert result.year == 2023
@@ -691,7 +692,7 @@ class TestParseJoplinTimestamp:
         """Should parse Joplin millisecond timestamp."""
         from joplin_mcp.imports.importers.utils.timestamp_utils import parse_joplin_timestamp
 
-        result = parse_joplin_timestamp(1672531200000)
+        result = parse_joplin_timestamp(1688169600000)  # Jul 1, 2023 UTC
 
         assert result is not None
         assert result.year == 2023
@@ -700,7 +701,7 @@ class TestParseJoplinTimestamp:
         """Should parse string representation of milliseconds."""
         from joplin_mcp.imports.importers.utils.timestamp_utils import parse_joplin_timestamp
 
-        result = parse_joplin_timestamp("1672531200000")
+        result = parse_joplin_timestamp("1688169600000")  # Jul 1, 2023 UTC
 
         assert result is not None
         assert result.year == 2023
