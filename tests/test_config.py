@@ -1079,7 +1079,7 @@ class TestConfigToolConfiguration:
         enabled_tools = config.get_enabled_tools()
         disabled_tools = config.get_disabled_tools()
         assert len(enabled_tools) + len(disabled_tools) == len(config.DEFAULT_TOOLS)
-        assert len(enabled_tools) == 30
+        assert len(enabled_tools) == 33
         assert len(disabled_tools) == 7
 
         # Check specific tools

@@ -186,7 +186,7 @@ async def bulk_move_notes(
     client = get_joplin_client()
 
     if backup != "suppress":
-        backup_joplin_database(force=(backup == "force"))
+        backup_joplin_database(force=(backup == "force"), label="bulk-move")
 
     results = _move_notes(client, note_ids, notebook_id)
     return _format_move_report(results, notebook_id)
@@ -679,7 +679,7 @@ async def search_and_bulk_update_execute(
         )
 
     if backup != "suppress":
-        backup_joplin_database(force=(backup == "force"))
+        backup_joplin_database(force=(backup == "force"), label="bulk-update")
 
     client = get_joplin_client()
     matching_notes, skipped_by_filter = _search_notes(client, query, **filters)

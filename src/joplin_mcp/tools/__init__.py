@@ -1,13 +1,14 @@
 """Joplin MCP Tools - importing registers all tools with the server."""
 from joplin_mcp.tools import (
-    notes,
+    backup_database,
     notebooks,
-    tags,
+    notes,
     notes_bulk,
+    notes_files,
+    notes_revisions,
+    tags,
     tags_bulk,
     trash,
-    notes_revisions,
-    backup_database,
 )
 
 __all__ = [
@@ -18,5 +19,6 @@ __all__ = [
     "tags_bulk",
     "trash",
     "notes_revisions",
+    "notes_files",
     "backup_database",
 ]

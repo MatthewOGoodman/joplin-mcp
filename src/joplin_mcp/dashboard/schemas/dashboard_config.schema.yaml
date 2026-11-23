@@ -1,0 +1,93 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://github.com/MatthewOGoodman/joplin-mcp/dashboard_config.schema.yaml"
+title: Dashboard Config
+description: |
+  Schema for joplin-dashboard YAML configs.
+  Human-readable spec: docs/dashboard_config.md
+  Hand-kept-in-sync with the spec; the canonical example in the spec is
+  validated against this schema by tests/test_dashboard_schema.py.
+
+type: object
+additionalProperties: false
+required: [output, sections]
+
+properties:
+  output:
+    type: string
+    minLength: 1
+    description: Path to the rendered Markdown output file. Tilde-expanded.
+
+  header:
+    type: string
+    default: ""
+    description: Markdown rendered before the first section. Supports {timestamp}.
+
+  footer:
+    type: string
+    default: ""
+    description: Markdown rendered after the last section.
+
+  sections:
+    type: array
+    minItems: 1
+    description: Ordered list of section definitions.
+    items:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          description: Heading rendered above the section's table.
+
+        notebook:
+          type: [string, "null"]
+          default: null
+          description: Notebook leaf name to scope the query. Null = all notebooks.
+
+        tags_required:
+          type: array
+          default: []
+          items:
+            type: string
+          description: Tags ALL of which a note must have.
+
+        tags_excluded:
+          type: array
+          default: []
+          items:
+            type: string
+          description: Tags ANY of which excludes a note.
+
+        extra_query:
+          type: [string, "null"]
+          default: null
+          description: Raw search-syntax appended to the constructed query.
+
+        columns:
+          type: array
+          default: [title, updated]
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Column names rendered left-to-right. Built-ins: title, tags,
+            notebook, updated, created, id. Other strings resolve against
+            note frontmatter (passthrough); the schema cannot enumerate.
+
+        group_by_tag_prefix:
+          type: [string, "null"]
+          default: null
+          description: If set, split section into sub-sections by tag suffix after this prefix.
+
+        sort_by:
+          type: string
+          default: updated
+          description: Sort column. Built-in or frontmatter field name.
+
+        sort_dir:
+          type: string
+          enum: [asc, desc]
+          default: desc
+          description: Sort direction.

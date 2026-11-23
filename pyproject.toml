@@ -42,6 +42,8 @@ dependencies = [
     "markdownify>=0.11.0",
     "pathspec>=0.11",
     "diff-match-patch>=20230430",
+    "python-frontmatter>=1.0.0",
+    "jsonschema>=4.18,<5",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +73,8 @@ Issues = "https://github.com/alondmnt/joplin-mcp/issues"
 [project.scripts]
 joplin-mcp = "joplin_mcp.server:main"
 joplin-mcp-server = "joplin_mcp.server:main"
+joplin-dashboard = "joplin_mcp.dashboard.cli:main"
+joplin-mdsync = "joplin_mcp.mdsync.cli:main"
 joplin-mcp-install = "joplin_mcp.install:main"
 
 [tool.setuptools.packages.find]
