@@ -1,5 +1,53 @@
 # Joplin MCP Server
 
+[![Tests](https://github.com/MatthewOGoodman/joplin-mcp/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/MatthewOGoodman/joplin-mcp/actions/workflows/tests.yml)
+
+> **This is a fork** of [alondmnt/joplin-mcp](https://github.com/alondmnt/joplin-mcp), currently synced to upstream v0.10.0.
+> The next section describes what the fork adds. Everything after it is upstream's documentation, left unchanged so upstream releases merge cleanly.
+
+## What this fork adds
+
+### 14 additional MCP tools
+
+| Area | Tools | What they do |
+|---|---|---|
+| Bulk editing | `search_and_bulk_update_preview`, `search_and_bulk_update_execute` | Query-driven edits of note fields across many notes. Execute takes the match count the preview reported and aborts if the search now returns a different number. It backs up the database before writing. |
+| Bulk organizing | `bulk_move_notes`, `strip_note_tags`, `move_note`, `bulk_tag_notes` | Move or retag many notes per call. `move_note` and `bulk_tag_notes` are aliases onto upstream's `update_note` and `tag_note`. |
+| Revision history | `get_note_history`, `restore_note_revision`, `manually_backup_note` | Read, diff and restore Joplin's per-note revisions. Title and body overwrites save a revision first. |
+| Trash | `list_trash` | Lists trashed notes and trashed notebooks (upstream can search only trashed notes). |
+| Database backup | `backup_database` | Consistent SQLite snapshot taken while Joplin Desktop is running. Bulk tools take one automatically once a day. |
+| File round-trip | `pull_note_to_file`, `push_md_file`, `update_note_from_file` | MCP front end to `joplin-mdsync` (below). |
+
+Every fork tool enforces upstream's notebook allowlist.
+
+### Two command-line tools
+
+- **`joplin-mdsync`** pulls a note to a local `.md` file, lets you edit it with any editor or agent, and writes it back to the note. The file's bytes travel verbatim, so your own YAML frontmatter is never re-serialized. Sync metadata lives in a fenced block spliced into the frontmatter. Drift detection compares body hashes: if the note changed in Joplin since your last sync, the write still lands, but the overwritten version is saved as a revision and the diff is written into your file.
+- **`joplin-dashboard`** renders Joplin searches into Markdown tables from a YAML config, validated against a JSON Schema. Config spec: [`docs/dashboard_config.md`](docs/dashboard_config.md).
+
+### Upstream contributions
+
+- [#19](https://github.com/alondmnt/joplin-mcp/pull/19) proposed bulk operations, revision history, trash management and database backup.
+- [#23](https://github.com/alondmnt/joplin-mcp/pull/23), `restore_from_trash`, was merged.
+- The maintainer rebuilt three further proposals as upstream features: trash search in `find_notes` ([#20](https://github.com/alondmnt/joplin-mcp/issues/20)), `notebook_name` on `update_note` ([#21](https://github.com/alondmnt/joplin-mcp/issues/21)), and list inputs to `tag_note` / `untag_note` ([#22](https://github.com/alondmnt/joplin-mcp/issues/22)).
+- The fork now delegates to those upstream interfaces and keeps its original tool names as aliases, so existing callers keep working.
+
+### Tests
+
+The unit tests mock the Joplin API, so the suite runs without Joplin Desktop. CI runs it on Python 3.10 and 3.13, one leg in a non-UTC timezone. The fork's own suites are `tests/test_fork_tools.py`, `tests/test_dashboard_*.py` and `tests/test_mdsync_*.py`.
+
+### Installing this fork
+
+`pip install joplin-mcp` and `uvx joplin-mcp` install upstream from PyPI. To get the fork, install from this repository:
+
+```bash
+pip install git+https://github.com/MatthewOGoodman/joplin-mcp.git
+```
+
+Configuration is otherwise exactly as in upstream's Quick Start below.
+
+---
+
 A **FastMCP-based Model Context Protocol (MCP) server** for [Joplin](https://joplinapp.org/) note-taking application via its Python API [joppy](https://github.com/marph91/joppy), enabling AI assistants to interact with your Joplin notes, notebooks, and tags through a standardized interface.
 
 <!-- mcp-name: io.github.alondmnt/joplin-mcp -->
