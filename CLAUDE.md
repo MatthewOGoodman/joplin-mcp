@@ -38,7 +38,7 @@ The fork exists to carry tools upstream declined to take as-is; see "Upstream Re
 - **Original Repository**: https://github.com/alondmnt/joplin-mcp
 - **Our Fork**: https://github.com/MatthewOGoodman/joplin-mcp
 - **Upstream version**: v0.10.0 (`b84c313`)
-- **Our main**: v0.10.0 merged onto the fork (`e033310`), then the fork tools rewired onto upstream's interfaces (`d4f6e19`). `feature/dev` carries `main` plus the dashboard and mdsync subpackages.
+- **Our main**: v0.10.0 merged onto the fork (`e033310`), then the fork tools rewired onto upstream's interfaces (`d4f6e19`). `main` also carries the dashboard and mdsync subpackages, a GitHub Actions test workflow, and the README's "What this fork adds" section (`1e80f30`). `feature/dev` is `main` plus the project's state and working files (`CLAUDE.md`, `STATUS.md`, `markdowns/`, and similar), which stay off `main`.
 - **Sync mechanism**: merge `upstream/main` into `main`, then `main` into `feature/dev`. Never rebase — both branches are public. Build each sync on a throwaway branch in an ephemeral `git worktree` so the editable install on `feature/dev` keeps serving the live MCP server, and fast-forward `main` only after the suite and the live smoke tests pass.
 
 ### What upstream absorbed
