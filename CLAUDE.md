@@ -2,7 +2,7 @@
 
 FastMCP-based MCP server giving AI assistants access to Joplin notes. A fork of alondmnt/joplin-mcp v0.10.0, adding 11 tools (bulk operations, trash listing, revisions, database backup), a dashboard subpackage that renders Joplin queries to Markdown tables, and an mdsync subpackage that round-trips local `.md` files against Joplin notes.
 
-*Schema: CLAUDE_MD_SCHEMA v2.2 · migrated 2026-07-28*
+*Schema: CLAUDE_MD_SCHEMA v2.5 · migrated 2026-11-25*
 
 ## Project
 
@@ -143,7 +143,7 @@ The `joplin_mcp.dashboard` subpackage is a config-driven utility that queries Jo
 |------|----------|
 | `dashboard/types.py` | `NoteRecord` dataclass; joppy time normalization to UTC datetime |
 | `dashboard/config.py` | `DashboardConfig` / `SectionConfig` dataclasses; YAML config loading and validation |
-| `dashboard/loader.py` | `Loader` ABC and `JoplinRestLoader` (joppy-backed). v1.5 will add `JoplinSqliteLoader` per CLAUDE.md TODO. |
+| `dashboard/loader.py` | `Loader` ABC and `JoplinRestLoader` (joppy-backed). A `JoplinSqliteLoader` is tracked in the "Direct SQLite read layer" thread. |
 | `dashboard/render.py` | Pure rendering: `render_section`, `assemble_dashboard`, sort, group-by-tag-prefix, Markdown escape |
 | `dashboard/cli.py` | `joplin-dashboard <config.yaml>` entry point with `--dry-run` |
 
@@ -331,7 +331,7 @@ Durable knowledge. Append-only.
 ### Gotchas
 
 - **PyYAML `default_flow_style=None` collapses leaf-only mappings** (2026-06-06): a dict whose values are all scalars renders as a single flow line (`key: {a: 1, b: 2}`), while the presence of any nested collection switches it to block style — so the output FORMAT changes based on the CONTENT. The mdsync block silently went one-line whenever `tags` was absent. Mitigation: use `default_flow_style=False` for any canonical line-oriented machine output.
-- **This repo's HEAD is not clean under the installed black** (2026-06-09): `git show HEAD:src/joplin_mcp/tools/backup_database.py | black --check -` reports "would reformat" under black 26.1.0, and `tests/pr_tests.py` already ships 9 `I001` isort violations from its inline-per-test imports. The committed code predates this formatter version, so the project does not in practice enforce it. Mitigation: never run a blanket `black` / `ruff --fix` as "cleanup" — it produces a large diff across unrelated pre-existing lines. Match the surrounding multi-line style for new code and stay within 88 columns.
+- **This repo's HEAD is not clean under the installed black** (2026-06-09): `git show HEAD:src/joplin_mcp/tools/backup_database.py | black --check -` reports "would reformat" under black 26.1.0, and `ruff check --select I001 tests` reports import-order violations throughout the test suite (re-checked 2026-11-25: black would reformat 66 files; ruff reports 101 `I001` findings). The committed code predates this formatter version, so the project does not in practice enforce it. Mitigation: never run a blanket `black` / `ruff --fix` as "cleanup" — it produces a large diff across unrelated pre-existing lines. Match the surrounding multi-line style for new code and stay within 88 columns.
 - **Upgrading this env from fastmcp 2 to 3 left an empty `fastmcp/` package** (2026-11-05): fastmcp 3 ships as two distributions, `fastmcp` and `fastmcp-slim`, that install into the same `fastmcp/` directory. After `pip install -e ".[dev]"` replaced fastmcp 2.12.3, the directory had no `__init__.py`, so `fastmcp` imported as an empty namespace package (`no attribute '__version__'`, then `No module named 'fastmcp.exceptions'` from `tests/conftest.py`). Mitigation: `pip install --force-reinstall --no-deps fastmcp==<v> fastmcp-slim==<v>`, then `pip check`.
 
 ### Dead Ends
@@ -348,22 +348,25 @@ No project-local skills (`.claude/skills/`) are defined. The skills this project
 
 ### Project Docs
 
-| Path | Contents |
-|------|----------|
-| `docs/dashboard_config.md` | Human-readable, key-by-key spec for the dashboard YAML config format |
-| `docs/troubleshooting.md` | Operational troubleshooting notes |
-| `docs/content-privacy.md` | Content-exposure / privacy configuration notes |
-| `src/joplin_mcp/dashboard/schemas/` | Tracked JSON Schema validators for dashboard configs (`dashboard_config.schema.yaml`, Draft 2020-12) |
-| `markdowns/plans_completed/` | Shipped implementation plans (tracked); referenced from commit messages |
-| `markdowns/session_archive/` | Consumed `SESSION_COMPACT_*.md` files and per-run `SWEPT_*.md` completed-entry archives (tracked) |
+Durable docs live in two directories: `docs/` (user-facing configuration and operations docs, shared with upstream) and `research_output/` (dated research snapshots). Their catalog, one scope line per doc, is:
 
-`markdowns/plans_draft/` and `markdowns/plans_backup/` are gitignored working space, not durable docs.
+@PROJECT_KNOWLEDGE_INDEX.md
+
+Records that are not durable docs:
+
+- `src/joplin_mcp/dashboard/schemas/` — tracked JSON Schema validators for dashboard configs (`dashboard_config.schema.yaml`, Draft 2020-12)
+- `markdowns/plans_completed/` — shipped implementation plans (tracked); referenced from commit messages
+- `markdowns/session_archive/` — consumed `SESSION_COMPACT_*.md` files and per-run `SWEPT_*.md` completed-entry archives (tracked)
+- `markdowns/status_threads/` — STATUS.md thread files, plus each thread's draft designs as `<slug>_PLAN_*.md`
+
+`markdowns/plans_draft/` and `markdowns/plans_backup/` are gitignored working space.
 
 ### Active
 
 The `@`-import surface — files pulled into context automatically at session start. Listed here without the `@` so they are indexed rather than re-imported:
 
 - `STATUS.md` → imported under Project → State. It in turn `@`-imports any un-archived `markdowns/SESSION_COMPACT_*.md` files.
+- `PROJECT_KNOWLEDGE_INDEX.md` → imported under Reference → Project Docs.
 
 ### Passive
 

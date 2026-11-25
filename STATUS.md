@@ -32,17 +32,6 @@ Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/
 - **Deferred by the 2026-11-25 autonomous pass (split candidates from the blind regrouping):** (a) pull the preview/execute ID-set-hash safety check out of "Direct SQLite read layer" — it ships on the current REST path; (b) split "Survey alternatives before implementing" into survey vs build; (c) split "Candidate tool and API additions" into events API, resource write tools, and search-operator docs; (d) fold "Extend the same treatment to joplin-mdsync" into the two earlier discoverability TODOs.
 - **Stale-thread review, 2026-11-25 (proposals only):** "joplin-dashboard global discoverability", "mdsync follow-ups", "Direct SQLite read layer" and "Joppy `utcfromtimestamp` deprecation warning" unchanged since 2026-07-28; "Fork enhancements" and "MCP packaging" since 2026-11-05. "CLAUDE.md cross-branch persistence" is already `[superseded]` but still holds one open TODO — archive it once claude-wrangler confirms ownership.
 
-### Review CLAUDE.md now!  [implement]
-
-#### Run `/claude-md-review`  [ ]
-
-start: 2026-11-25 12:01; update: 2026-11-25 12:01
-CLAUDE.md needs judgment work the 2026-11-25 cleanup could not do autonomously.
-- Stamp says CLAUDE_MD_SCHEMA v2.2; the schema is now v2.5. An interactive review that resolves everything advances the stamp.
-- v2.5 moves the durable-doc catalog out of Reference → Project Docs into `PROJECT_KNOWLEDGE_INDEX.md`, `@`-imported from that facet (`/record-knowledge-base` does the migration on first use).
-- Catalog gap: `docs/agent-smoke-tests.md` (added by the upstream v0.10.0 merge) has no Project Docs entry.
-- Gotcha "This repo's HEAD is not clean under the installed black" still cites `tests/pr_tests.py`, removed in `d4f6e19`; decide whether the dated record needs a note.
-
 ## 2. Active Threads
 
 ### Notebook-path support in dashboard YAML  [plan] (#)
