@@ -3,7 +3,7 @@
 Superseded 2026-11-06 — handed to claude-wrangler as the single owner.
 - claude-wrangler's Inbox item "Revive or retire the cross-branch context-file carry" carries this thread's unique TODOs: survey alternatives, the shared-vs-branch split, and carrying the thread-file directory too.
 - Drop this thread once that item is picked up.
-
+- The draft design that preceded the hand-off is in `claude-md-cross-branch-persistence_PLAN_design.md`; it archives with this thread.
 
 ## TODO
 

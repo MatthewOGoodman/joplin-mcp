@@ -2,9 +2,8 @@
 
 Put the joplin-dashboard and joplin-mdsync CLIs on PATH outside the conda env.
 - Wrapper at `bin/joplin-dashboard` + a `claude-wrangler-manifest.txt` entry so the CLI resolves from any non-conda shell.
-- Design rationale — including the drafted wrapper script and the five rejected alternatives — in `markdowns/DESIGN_NOTES.md` → "Design: joplin-dashboard global discoverability".
+- Design rationale — including the drafted wrapper script and the five rejected alternatives — in `joplin-dashboard-global-discoverability_PLAN_design.md`.
 - An interim hardcoded symlink is already in place from a job_search session; the installer will warn-and-skip on it unless run with `--force`.
-
 
 ## TODO
 

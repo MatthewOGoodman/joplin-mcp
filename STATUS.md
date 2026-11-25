@@ -43,14 +43,6 @@ CLAUDE.md needs judgment work the 2026-11-25 cleanup could not do autonomously.
 - Catalog gap: `docs/agent-smoke-tests.md` (added by the upstream v0.10.0 merge) has no Project Docs entry.
 - Gotcha "This repo's HEAD is not clean under the installed black" still cites `tests/pr_tests.py`, removed in `d4f6e19`; decide whether the dated record needs a note.
 
-### Process Inbox now!  [implement]
-
-#### Process §7 Inbox  [ ]
-
-start: 2026-11-25 12:01; update: 2026-11-25 12:01
-1 item left for interactive classification.
-- "DESIGN_NOTES.md carries no registered doc category" — a rename decision with reference updates; never applied autonomously.
-
 ## 2. Active Threads
 
 ### Notebook-path support in dashboard YAML  [plan] (#)
@@ -117,10 +109,4 @@ No open research topics.
 
 ## 7. Inbox
 
-### [Inbox] DESIGN_NOTES.md carries no registered doc category  [ ]
-
-start: 2026-11-25 12:01; update: 2026-11-25 12:01
-`markdowns/DESIGN_NOTES.md` fails the MD_DOCS_VOCAB naming check (new since the last grooming); rename needs a human call.
-- Dev-branch grammar wants `<topic-stem>_<CATEGORY>.md`; nearest declared category is `SPEC` (or a new registry row if "design notes for unbuilt features" is a category of its own).
-- A rename must repoint the references in CLAUDE.md Project Docs and three thread files (`direct-sqlite-read-layer`, `joplin-dashboard-global-discoverability`, `mcp-packaging-distribution-infrastructure`).
-- Pre-existing, warn only: `docs/dashboard_config.md` has the same gap (nearest: `SCHEMA`).
+No items.
