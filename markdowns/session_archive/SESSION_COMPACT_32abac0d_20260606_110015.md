@@ -2,7 +2,7 @@
 
 **datetime:** 2026-06-06 11:00
 **head_commit:** 0101d9a
-**project_root:** /Users/mattheworlando/projects/dev/joplin-mcp
+**project_root:** ~/projects/dev/joplin-mcp
 **session_id:** 32abac0d (first 8 of session UUID)
 
 ## Executive summary

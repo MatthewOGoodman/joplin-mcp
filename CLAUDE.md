@@ -69,7 +69,7 @@ git checkout -b pr/<topic> upstream/main
 
 ```bash
 cd ~/projects/dev/joplin-mcp
-source /Users/mattheworlando/miniforge3/etc/profile.d/conda.sh && conda activate joplin-mcp
+source ~/miniforge3/etc/profile.d/conda.sh && conda activate joplin-mcp
 pip install -e .       # editable install — code edits take effect on MCP server reload
 pip install -e ".[dev]" # includes pytest, black, ruff, mypy
 ```

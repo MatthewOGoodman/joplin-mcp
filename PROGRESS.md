@@ -8,7 +8,7 @@ Run reports from `/project-prioritize`. Not `@`-imported; read on demand.
 
 | Read | Result |
 |---|---|
-| Project root | `/Users/mattheworlando/projects/dev/joplin-mcp`, branch `feature/dev` |
+| Project root | `~/projects/dev/joplin-mcp`, branch `feature/dev` |
 | Metadata line | `Last prioritized: 2026-05-18 09:00` (71 days stale) |
 | Grooming anchor | `43c2c81` (`session-shutdown:` 2026-06-09) |
 | Commits since anchor | 1 — `41f8cb5` (chore: track leftover scratch markdowns) |

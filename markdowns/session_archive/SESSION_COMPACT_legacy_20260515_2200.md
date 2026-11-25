@@ -2,7 +2,7 @@
 
 **datetime:** 2026-05-15 22:00
 **head_commit:** 143b0ac
-**project_root:** /Users/mattheworlando/projects/dev/joplin-mcp
+**project_root:** ~/projects/dev/joplin-mcp
 **session_id:** joplin-mcp-dashboard-configs
 
 ## Executive summary
