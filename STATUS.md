@@ -39,12 +39,12 @@ Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/
 Full-path notebook matching in the dashboard loader, to unblock job_search.
 → markdowns/status_threads/notebook-path-support-in-dashboard-yaml_THREAD.md
 
-## 3. Inactive Threads
-
-### joplin-dashboard global discoverability  [queued]
+### joplin-dashboard global discoverability  [implement]
 
 Put the joplin-dashboard and joplin-mdsync CLIs on PATH outside the conda env.
 → markdowns/status_threads/joplin-dashboard-global-discoverability_THREAD.md
+
+## 3. Inactive Threads
 
 ### mdsync follow-ups  [queued]
 

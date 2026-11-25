@@ -147,7 +147,7 @@ The `joplin_mcp.dashboard` subpackage is a config-driven utility that queries Jo
 | `dashboard/render.py` | Pure rendering: `render_section`, `assemble_dashboard`, sort, group-by-tag-prefix, Markdown escape |
 | `dashboard/cli.py` | `joplin-dashboard <config.yaml>` entry point with `--dry-run` |
 
-**CLI:** Registered as `joplin-dashboard` via `[project.scripts]` in `pyproject.toml`. After `pip install -e .`, runs from any cwd.
+**CLI:** Registered as `joplin-dashboard` via `[project.scripts]` in `pyproject.toml`. After `pip install -e .`, runs from any cwd. Outside the conda env, `bin/joplin-dashboard` and `bin/joplin-mdsync` (links to `bin/joplin-env-exec`, which finds the env at run time) are installed as `~/.claude/` links by claude-wrangler from `claude-wrangler-manifest.txt`.
 
 **Dependency:** `python-frontmatter>=1.0.0` (pulled in via `pyproject.toml` deps). Used to parse YAML frontmatter from note bodies for cross-reference fields and arbitrary frontmatter columns.
 

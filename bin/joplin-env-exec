@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Run a joplin-mcp console script from any shell, without activating its conda env.
+#
+# Invoked through a link named after the command (bin/joplin-dashboard,
+# bin/joplin-mdsync, or a ~/.claude link pointing at one of those): the
+# link's name picks the console script, which is executed from the env's bin
+# directory. The env is found at run time, so nothing machine-specific is
+# hardcoded:
+#   JOPLIN_MCP_ENV   env name (default: joplin-mcp)
+#   conda base       from $CONDA_EXE, else `conda info --base`, else the
+#                    first of ~/miniforge3, ~/mambaforge, ~/miniconda3,
+#                    ~/anaconda3 that holds the env
+set -euo pipefail
+
+cmd="$(basename "$0")"
+if [[ "$cmd" == "joplin-env-exec" ]]; then
+  echo "usage: invoke through a link named after the command, e.g. bin/joplin-dashboard" >&2
+  exit 2
+fi
+env_name="${JOPLIN_MCP_ENV:-joplin-mcp}"
+
+candidates=()
+if [[ -n "${CONDA_EXE:-}" ]]; then
+  candidates+=("$(dirname "$(dirname "$CONDA_EXE")")")
+fi
+if command -v conda >/dev/null 2>&1; then
+  if base="$(conda info --base 2>/dev/null)"; then
+    candidates+=("$base")
+  fi
+fi
+candidates+=("$HOME/miniforge3" "$HOME/mambaforge" "$HOME/miniconda3" "$HOME/anaconda3")
+
+for base in "${candidates[@]}"; do
+  target="$base/envs/$env_name/bin/$cmd"
+  if [[ -x "$target" ]]; then
+    exec "$target" "$@"
+  fi
+done
+
+echo "ERROR: $cmd not found in conda env '$env_name' (looked under: ${candidates[*]})." >&2
+echo "Install it with 'pip install -e .' in the joplin-mcp repo, inside that env." >&2
+exit 1

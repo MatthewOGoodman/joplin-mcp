@@ -1,0 +1,5 @@
+# Symlinks claude-wrangler's install.sh creates for this repo (target:source).
+# Both sources are links to bin/joplin-env-exec, which runs the same-named
+# console script from the joplin-mcp conda env, so the commands work in any shell.
+~/.claude/joplin-dashboard:bin/joplin-dashboard
+~/.claude/joplin-mdsync:bin/joplin-mdsync
