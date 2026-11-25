@@ -353,7 +353,6 @@ No project-local skills (`.claude/skills/`) are defined. The skills this project
 | `docs/dashboard_config.md` | Human-readable, key-by-key spec for the dashboard YAML config format |
 | `docs/troubleshooting.md` | Operational troubleshooting notes |
 | `docs/content-privacy.md` | Content-exposure / privacy configuration notes |
-| `docs/enhancement-proposal.md` | Enhancement proposal write-up |
 | `src/joplin_mcp/dashboard/schemas/` | Tracked JSON Schema validators for dashboard configs (`dashboard_config.schema.yaml`, Draft 2020-12) |
 | `markdowns/DESIGN_NOTES.md` | Design rationale for features not yet built — problem, approach chosen, alternatives rejected. Each note pairs with a STATUS.md thread; a note graduates to Learnings → Design Decisions once its feature ships |
 | `markdowns/plans_completed/` | Shipped implementation plans (tracked); referenced from commit messages |

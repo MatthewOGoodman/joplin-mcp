@@ -1,8 +1,6 @@
 # STATUS
 
-*Last checkpoint: 2026-11-25 12:00 | Last prioritized: 2026-07-28 15:58 [auto] | Last shutdown: 2026-08-01 23:00 | Last cleanup: 2026-07-28 15:58*
-
-@markdowns/SESSION_COMPACT_7736159a_20260801_230000.md
+*Last checkpoint: 2026-11-25 12:00 | Last prioritized: 2026-11-25 12:01 [auto] | Last shutdown: 2026-08-01 23:00 | Last cleanup: 2026-11-25 12:01*
 
 ## 0. Project Overview
 
@@ -14,7 +12,7 @@ FastMCP-based MCP server giving AI assistants access to Joplin notes; fork of al
 
 ### Focus
 
-Notebook-path support in the dashboard YAML loader is the sole active priority. It is the only open item with a blocked downstream consumer — job_search dashboards are running on a leaf-name workaround — and it is tracked as a cross-project blocker in user-global `STATUS.md`. Next step is `/framing` on the full-path matching approach, then a plan, then implementation in `dashboard/loader.py`.
+Notebook-path support in the dashboard YAML loader is the sole active priority. It is the only open item with a blocked downstream consumer — job_search dashboards are running on a leaf-name workaround — and it is tracked as a cross-project blocker in user-global `STATUS.md`. Next step is checking whether upstream's `get_notebook_id_by_name` (path-aware since v0.10.0) already does the resolution; only if it does not, `/framing` on the matching approach, then a plan, then implementation in `dashboard/loader.py`.
 
 Recently cleared: dashboard schema validation shipped (`408b754`); the mdsync round-trip tool shipped, committed (`bbacf38` + `43c2c81`), and was dogfooded end-to-end on 2026-07-28 (five plan notes pulled and pushed, drift detection reporting none) — its completed record is archived in `markdowns/session_archive/`.
 
@@ -31,6 +29,27 @@ Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/
 - **Replan, do not re-rank — "Notebook-path support in dashboard YAML".** It has been the top priority since 2026-05-15 with zero commits against it in that time, and both the 2026-06-06 and 2026-06-09 session records note it as "remains open — untouched this session". Its first step is a `/framing`, so the thread is stalled at a decision, not at implementation. Consider either scheduling that framing explicitly, or descoping to exact-path-only matching that unblocks job_search without settling the fuzzy-matching question.
 - **Stale-thread review (proposals only, never auto-applied).** Untouched since 2026-05-15: "Fork enhancements" `[idea]`, "MCP packaging / distribution infrastructure" `[deferred]`, "CLAUDE.md cross-branch persistence" `[idea]`. Decide whether any should become `[superseded]`.
 - **No prioritization rubric exists.** RICE scoring this pass was uncalibrated. An interactive run can bootstrap `PRIORITIZATION_RUBRIC.md`; autonomous runs never author it.
+- **Deferred by the 2026-11-25 autonomous pass (split candidates from the blind regrouping):** (a) pull the preview/execute ID-set-hash safety check out of "Direct SQLite read layer" — it ships on the current REST path; (b) split "Survey alternatives before implementing" into survey vs build; (c) split "Candidate tool and API additions" into events API, resource write tools, and search-operator docs; (d) fold "Extend the same treatment to joplin-mdsync" into the two earlier discoverability TODOs.
+- **Stale-thread review, 2026-11-25 (proposals only):** "joplin-dashboard global discoverability", "mdsync follow-ups", "Direct SQLite read layer" and "Joppy `utcfromtimestamp` deprecation warning" unchanged since 2026-07-28; "Fork enhancements" and "MCP packaging" since 2026-11-05. "CLAUDE.md cross-branch persistence" is already `[superseded]` but still holds one open TODO — archive it once claude-wrangler confirms ownership.
+
+### Review CLAUDE.md now!  [implement]
+
+#### Run `/claude-md-review`  [ ]
+
+start: 2026-11-25 12:01; update: 2026-11-25 12:01
+CLAUDE.md needs judgment work the 2026-11-25 cleanup could not do autonomously.
+- Stamp says CLAUDE_MD_SCHEMA v2.2; the schema is now v2.5. An interactive review that resolves everything advances the stamp.
+- v2.5 moves the durable-doc catalog out of Reference → Project Docs into `PROJECT_KNOWLEDGE_INDEX.md`, `@`-imported from that facet (`/record-knowledge-base` does the migration on first use).
+- Catalog gap: `docs/agent-smoke-tests.md` (added by the upstream v0.10.0 merge) has no Project Docs entry.
+- Gotcha "This repo's HEAD is not clean under the installed black" still cites `tests/pr_tests.py`, removed in `d4f6e19`; decide whether the dated record needs a note.
+
+### Process Inbox now!  [implement]
+
+#### Process §7 Inbox  [ ]
+
+start: 2026-11-25 12:01; update: 2026-11-25 12:01
+1 item left for interactive classification.
+- "DESIGN_NOTES.md carries no registered doc category" — a rename decision with reference updates; never applied autonomously.
 
 ## 2. Active Threads
 
@@ -51,21 +70,6 @@ Put the joplin-dashboard and joplin-mdsync CLIs on PATH outside the conda env.
 Residual verification left over from the shipped mdsync subpackage (`bbacf38`). The feature itself is done, committed, and dogfooded; the completed record is archived in `markdowns/session_archive/SWEPT_20260728_1558.md`.
 → markdowns/status_threads/mdsync-follow-ups_THREAD.md
 
-### Test suite hygiene  [queued]
-
-Resolve long-standing test failures so the suite can catch real regressions.
-→ markdowns/status_threads/test-suite-hygiene_THREAD.md
-
-### Repo housekeeping  [queued]
-
-Low-priority disposition of leftover scratch files now tracked at the repo root (committed in `41f8cb5`).
-→ markdowns/status_threads/repo-housekeeping_THREAD.md
-
-### CLAUDE.md cross-branch persistence  [superseded]
-
-Superseded 2026-11-06 — handed to claude-wrangler as the single owner.
-→ markdowns/status_threads/claude-md-cross-branch-persistence_THREAD.md
-
 ### Direct SQLite read layer  [idea]
 
 Read-only SQLite layer for filtered reads, keeping REST for writes.
@@ -85,6 +89,11 @@ Extract the archived Docker/install tooling into a reusable mcp-docker-dev repo.
 
 Silence joppy's utcfromtimestamp DeprecationWarning on every dashboard run.
 → markdowns/status_threads/joppy-utcfromtimestamp-deprecation-warning_THREAD.md
+
+### CLAUDE.md cross-branch persistence  [superseded]
+
+Superseded 2026-11-06 — handed to claude-wrangler as the single owner.
+→ markdowns/status_threads/claude-md-cross-branch-persistence_THREAD.md
 
 ## 4. Deliverables and Deadlines
 
@@ -107,3 +116,11 @@ The cross-project blocker "Notebook-path support in dashboard YAML" is one this 
 No open research topics.
 
 ## 7. Inbox
+
+### [Inbox] DESIGN_NOTES.md carries no registered doc category  [ ]
+
+start: 2026-11-25 12:01; update: 2026-11-25 12:01
+`markdowns/DESIGN_NOTES.md` fails the MD_DOCS_VOCAB naming check (new since the last grooming); rename needs a human call.
+- Dev-branch grammar wants `<topic-stem>_<CATEGORY>.md`; nearest declared category is `SPEC` (or a new registry row if "design notes for unbuilt features" is a category of its own).
+- A rename must repoint the references in CLAUDE.md Project Docs and three thread files (`direct-sqlite-read-layer`, `joplin-dashboard-global-discoverability`, `mcp-packaging-distribution-infrastructure`).
+- Pre-existing, warn only: `docs/dashboard_config.md` has the same gap (nearest: `SCHEMA`).

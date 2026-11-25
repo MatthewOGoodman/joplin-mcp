@@ -80,3 +80,60 @@ One trigger fired; the hard cap of one proposal per pass was respected.
 - Three stale-thread `[superseded]` proposals.
 - The possibly mis-filed `update_notebook(parent_id)` backlog item.
 - Bootstrapping `PRIORITIZATION_RUBRIC.md`.
+
+## Run 2026-11-25 — --auto (via /project-cleanup)
+
+### Phase 0 — Ground state
+
+| Read | Result |
+|---|---|
+| Project root | `~/projects/dev/joplin-mcp`, branch `feature/dev` |
+| Layout | thread files; `status_tools validate` OK, 0 warnings |
+| Metadata before | Last checkpoint 2026-11-25 12:00 · Last prioritized 2026-07-28 15:58 [auto] · Last shutdown 2026-08-01 23:00 · Last cleanup 2026-07-28 15:58 |
+| Grooming anchor | `20c02a0` (project-cleanup, 2026-07-28) |
+| Git since anchor | upstream v0.10.0 merge (`e033310`) + fork-tool rewire (`d4f6e19`, `2b04329`); dashboard and mdsync onto `main` (`fe905d1`); timezone-safe tests (`b9b3108`); CI workflow (`1e80f30`); fork README section (`b5bb9e2`); feature/dev scratch cleanup (`597d4a7`). Nothing touches `dashboard/loader.py`. |
+| User-global | Blocker "Notebook-path support in dashboard YAML" still Active (owner: this project); no Resolved blocker names this project |
+| SESSION_COMPACT | `SESSION_COMPACT_7736159a_20260801_230000.md`, distilled by a blind `Plan` subagent; no item changes a ranking (its two Inbox items were removed by the 2026-11-06 session; its open questions belong to claude-wrangler) |
+| Rubric | none — scoring uncalibrated |
+
+### Phase 1 — Structure inference
+
+- Inventory before this pass: 1 active, 9 inactive threads. The cleanup sweep archived "Test suite hygiene" and "Repo housekeeping" (both TODOs `[x]`), leaving 1 active, 7 inactive, 11 TODOs.
+- State-change quadrant: no thread has commits since the anchor; all are dormant. No promote/demote signal.
+- Blind regrouping (L4, `Plan` subagent, TODOs only): eight groups mapping one-to-one onto the current eight threads. Findings: (a) the upstream-resolver check in "Frame and plan full-path matching" is a precondition listed last — applied (REORDER inside the TODO); (b) the preview/execute safety check inside "Direct SQLite read layer" is independently shippable — deferred; (c) "Survey alternatives before implementing" hides a survey/build split — deferred; (d) "Candidate tool and API additions" is three unrelated units — deferred; (e) "Extend the same treatment to joplin-mdsync" could fold into the two earlier discoverability TODOs — deferred.
+- Dependencies: none new. No cycles.
+- No-loss check: 11 TODO short-names before and after; none missing.
+
+### Phase 2 — Value scoring
+
+MoSCoW: 1 Must of 8 threads (12%), under the 60% cap; the Must is user-pinned `(#)` and linked to the §4 deliverable.
+
+| Thread | Bucket | R | I | C | E | RICE |
+|---|---|---|---|---|---|---|
+| Notebook-path support in dashboard YAML | Must | 8 | 8 | 8 | 3 | **171** |
+| mdsync follow-ups | Should | 2 | 3 | 9 | 1 | 54 |
+| joplin-dashboard global discoverability | Should | 3 | 4 | 8 | 2 | 48 |
+| Joppy deprecation warning | Could | 1 | 1 | 8 | 1 | 8 |
+| Direct SQLite read layer | Could | 3 | 6 | 3 | 8 | 6.8 |
+| MCP packaging / distribution | Could | 2 | 3 | 3 | 8 | 2.3 |
+| Fork enhancements | Could | 2 | 3 | 2 | 6 | 2.0 |
+| CLAUDE.md cross-branch persistence | Won't | — | — | — | — | — |
+
+Notebook-path Confidence rose 7 → 8 and Effort fell 4 → 3: since v0.10.0 upstream's `get_notebook_id_by_name` resolves `Parent/Child` paths (evidence: the thread's own TODO, written after the `d4f6e19` rewire).
+
+**Applied re-rank (bucket-order only).** "CLAUDE.md cross-branch persistence" (`[superseded]`, Won't) sat above the `[idea]` and `[deferred]` threads; moved to the bottom of Inactive Threads. Relative order within buckets kept, since scoring is uncalibrated.
+
+**Stale-thread review — proposals only, not applied.** Unchanged since 2026-07-28: discoverability, mdsync follow-ups, Direct SQLite read layer, Joppy deprecation. Since 2026-11-05: Fork enhancements, MCP packaging. Recorded in `### Reprioritize now!`.
+
+### Phase 3 — Meta-reasoning
+
+Trigger 3 (observation-prediction mismatch) still fires on "Notebook-path support in dashboard YAML": top priority since 2026-05-15, no commit against it. The one proposal this pass: start with the upstream-resolver check, which may collapse the framing step entirely; applied as a TODO reorder and reflected in Focus. No other trigger fired.
+
+### Phase 4 — Applied vs deferred
+
+Applied:
+- (Frame and plan full-path matching, bullet order → upstream check first, blind-regroup finding (a), L5 REORDER)
+- (CLAUDE.md cross-branch persistence, rank → last in Inactive, MoSCoW Won't below Could, bucket order)
+- (§1 Focus, next step → upstream check before `/framing`, Phase 3 trigger 3)
+
+Deferred for interactive review (in `### Reprioritize now!`): split candidates (b)–(e) from Phase 1; the stale-thread proposals; archiving the superseded cross-branch thread; bootstrapping `PRIORITIZATION_RUBRIC.md`.
