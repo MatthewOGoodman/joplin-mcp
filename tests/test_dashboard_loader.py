@@ -80,8 +80,12 @@ class TestBuildQuery:
         self.loader = JoplinRestLoader(client=MagicMock())
 
     def test_notebook_only(self):
+        section = SectionConfig(title="X", notebook="People")
+        assert self.loader._build_query(section) == 'notebook:"People"'
+
+    def test_full_path_searches_by_last_segment(self):
         section = SectionConfig(title="X", notebook="1-Job Search/People")
-        assert self.loader._build_query(section) == 'notebook:"1-Job Search/People"'
+        assert self.loader._build_query(section) == 'notebook:"People"'
 
     def test_notebook_plus_required_tag(self):
         section = SectionConfig(
@@ -191,3 +195,62 @@ class TestLoadSectionEndToEnd:
         self.client.search_all.return_value = _data_list([])
         records = self.loader.load_section(SectionConfig(title="X", notebook="X"))
         assert records == []
+
+
+class TestFullPathNotebook:
+    """A notebook value with "/" is matched as an exact path, sub-notebooks included.
+
+    Folder tree used by every test:
+        job (Job Search) ── apps (Applications) ── old (Archive)
+        misc (Misc) ─────── misc_apps (Applications)
+    """
+
+    FOLDERS = {
+        "job": _fake_folder("job", "Job Search"),
+        "apps": _fake_folder("apps", "Applications", parent_id="job"),
+        "old": _fake_folder("old", "Archive", parent_id="apps"),
+        "misc": _fake_folder("misc", "Misc"),
+        "misc_apps": _fake_folder("misc_apps", "Applications", parent_id="misc"),
+    }
+
+    def setup_method(self):
+        self.client = MagicMock()
+        self.client.get_all_notebooks.return_value = list(self.FOLDERS.values())
+        self.client.get_notebook.side_effect = lambda id_: self.FOLDERS[id_]
+        self.client.get_tags.return_value = _data_list([])
+        self.client.search_all.return_value = _data_list(
+            [
+                _fake_note(id="in_path", parent_id="apps"),
+                _fake_note(id="nested", parent_id="old"),
+                _fake_note(id="same_name_elsewhere", parent_id="misc_apps"),
+            ]
+        )
+        self.loader = JoplinRestLoader(client=self.client)
+
+    def _ids(self, notebook):
+        records = self.loader.load_section(SectionConfig(title="X", notebook=notebook))
+        return sorted(r.id for r in records)
+
+    def test_keeps_path_and_nested_notes_only(self):
+        assert self._ids("Job Search/Applications") == ["in_path", "nested"]
+
+    def test_excludes_same_named_notebook_under_other_parent(self):
+        assert self._ids("Misc/Applications") == ["same_name_elsewhere"]
+
+    def test_path_segments_match_case_insensitively(self):
+        assert self._ids("job search/applications") == ["in_path", "nested"]
+
+    def test_deeper_path_narrows_to_that_notebook(self):
+        assert self._ids("Job Search/Applications/Archive") == ["nested"]
+
+    def test_mistyped_path_raises_with_suggestion(self):
+        with pytest.raises(ValueError, match="not found in path"):
+            self.loader.load_section(
+                SectionConfig(title="X", notebook="Job Search/Aplications")
+            )
+        self.client.search_all.assert_not_called()
+
+    def test_bare_name_is_not_path_filtered(self):
+        # Without "/" Joplin's own title match decides; nothing is dropped here.
+        assert self._ids("Applications") == ["in_path", "nested", "same_name_elsewhere"]
+        self.client.get_all_notebooks.assert_not_called()

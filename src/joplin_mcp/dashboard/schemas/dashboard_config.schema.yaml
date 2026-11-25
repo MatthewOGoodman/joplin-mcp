@@ -44,7 +44,7 @@ properties:
         notebook:
           type: [string, "null"]
           default: null
-          description: Notebook leaf name to scope the query. Null = all notebooks.
+          description: Notebook name, or full path like "Parent/Child", to scope the query. Null = all notebooks.
 
         tags_required:
           type: array

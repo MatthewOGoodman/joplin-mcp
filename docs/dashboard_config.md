@@ -20,7 +20,7 @@ Unknown top-level keys are rejected (`additionalProperties: false`).
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `title` | string | yes | — | Heading rendered above the section's table. |
-| `notebook` | string \| null | no | `null` | Notebook name (leaf, not path — see "Notebook paths" below) to scope the section's query. Omit or `null` to search all notebooks. |
+| `notebook` | string \| null | no | `null` | Notebook name or full path (see "Notebook paths" below) to scope the section's query. Omit or `null` to search all notebooks. |
 | `tags_required` | array of strings | no | `[]` | Tags ALL of which a note must have to appear. |
 | `tags_excluded` | array of strings | no | `[]` | Tags ANY of which excludes a note. |
 | `extra_query` | string \| null | no | `null` | Raw search-syntax appended to the constructed query. |
@@ -42,7 +42,11 @@ The schema cannot distinguish these (both are strings); built-ins are documented
 
 ## Notebook paths
 
-The current `notebook` field is matched against the leaf name only (e.g., `"People"` matches `1-Job Search/People`). Full-path matching is a tracked open feature; consumer configs use leaf names today.
+The `notebook` field takes either form:
+
+- **A bare name** (`"People"`) uses Joplin's own `notebook:` search filter, which matches every notebook with that title and the notebooks nested inside it.
+- **A full path** (`"1-Job Search/People"`) matches exactly one notebook, found by walking the path from the top level, plus the notebooks nested inside it. A same-named notebook elsewhere is excluded. Segments match case-insensitively, `/` is the separator (as in every joplin-mcp notebook argument), and a path that does not resolve fails the run with a "Did you mean" suggestion rather than rendering an empty section.
+
 
 ## Validation behavior
 

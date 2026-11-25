@@ -42,13 +42,16 @@ class JoplinRestLoader(Loader):
         self._notebook_path_cache: dict[str, str] = {}
 
     def load_section(self, section: SectionConfig) -> list[NoteRecord]:
+        wanted_path = self._resolve_section_path(section)
         query = self._build_query(section)
         notes = _items(self._client.search_all(query=query, fields=_NOTE_FIELDS))
 
         records: list[NoteRecord] = []
         for note in notes:
-            tag_titles = self._tag_titles_for(note.id)
             notebook_path = self._notebook_path_for(note.parent_id)
+            if wanted_path is not None and not _is_within(notebook_path, wanted_path):
+                continue
+            tag_titles = self._tag_titles_for(note.id)
             metadata, _body = _split_frontmatter(note.body)
             records.append(
                 NoteRecord.from_joppy_note(
@@ -64,7 +67,11 @@ class JoplinRestLoader(Loader):
     def _build_query(self, section: SectionConfig) -> str:
         parts: list[str] = []
         if section.notebook:
-            parts.append(f'notebook:"{section.notebook}"')
+            # Joplin's notebook: filter matches a notebook's own title only, so
+            # a full path searches by its last segment; load_section then keeps
+            # only notes that sit at (or under) the full path.
+            leaf = section.notebook.rstrip("/").rsplit("/", 1)[-1].strip()
+            parts.append(f'notebook:"{leaf}"')
         for tag in section.tags_required:
             parts.append(f'tag:"{tag}"')
         for tag in section.tags_excluded:
@@ -72,6 +79,25 @@ class JoplinRestLoader(Loader):
         if section.extra_query:
             parts.append(section.extra_query)
         return " ".join(parts) if parts else "*"
+
+    def _resolve_section_path(self, section: SectionConfig) -> str | None:
+        """Return the canonical full path a section is restricted to, or None.
+
+        Only a notebook value containing "/" is a path; a bare name keeps
+        Joplin's own title matching. The path is resolved exactly (each
+        segment must name a child of the previous one) through upstream's
+        NotebookResolver, so a mistyped path raises ValueError with its
+        "Did you mean" suggestions instead of rendering an empty section.
+        The returned path is rebuilt from the resolved notebook's titles, so
+        it compares exactly against the paths of the notes found.
+        """
+        if not section.notebook or "/" not in section.notebook:
+            return None
+        from joplin_mcp.notebook_utils import NotebookResolver
+
+        resolver = NotebookResolver(lambda: self._client)
+        notebook_id = resolver.resolve_by_path(section.notebook)
+        return self._notebook_path_for(notebook_id)
 
     def _tag_titles_for(self, note_id: str) -> list[str]:
         tags = _items(self._client.get_tags(note_id=note_id))
@@ -97,6 +123,11 @@ class JoplinRestLoader(Loader):
 
 
 _NOTE_FIELDS = "id,title,body,parent_id,created_time,updated_time"
+
+
+def _is_within(notebook_path: str, wanted_path: str) -> bool:
+    """True when notebook_path is wanted_path itself or a notebook nested in it."""
+    return notebook_path == wanted_path or notebook_path.startswith(wanted_path + "/")
 
 
 def _items(result):
