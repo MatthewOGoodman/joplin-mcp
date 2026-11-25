@@ -1,6 +1,6 @@
 # STATUS
 
-*Last checkpoint: 2026-11-25 12:00 | Last prioritized: 2026-11-25 12:01 [auto] | Last shutdown: 2026-08-01 23:00 | Last cleanup: 2026-11-25 12:01*
+*Last checkpoint: 2026-11-25 12:00 | Last prioritized: 2026-11-25 14:39 | Last shutdown: 2026-08-01 23:00 | Last cleanup: 2026-11-25 12:01*
 
 ## 0. Project Overview
 
@@ -12,9 +12,9 @@ FastMCP-based MCP server giving AI assistants access to Joplin notes; fork of al
 
 ### Focus
 
-Notebook-path support in the dashboard YAML loader is the sole active priority. It is the only open item with a blocked downstream consumer — job_search dashboards are running on a leaf-name workaround — and it is tracked as a cross-project blocker in user-global `STATUS.md`. Next step is checking whether upstream's `get_notebook_id_by_name` (path-aware since v0.10.0) already does the resolution; only if it does not, `/framing` on the matching approach, then a plan, then implementation in `dashboard/loader.py`.
+Full-path notebook matching shipped 2026-11-25 (`20d0bd6`): a dashboard section can now name `"1-Job Search/People"`, and the job_search blocker is resolved — switching job_search's config over is job_search's call. Its thread is complete and awaits the next cleanup sweep.
 
-Recently cleared: dashboard schema validation shipped (`408b754`); the mdsync round-trip tool shipped, committed (`bbacf38` + `43c2c81`), and was dogfooded end-to-end on 2026-07-28 (five plan notes pulled and pushed, drift detection reporting none) — its completed record is archived in `markdowns/session_archive/`.
+Two small threads are active alongside it, both waiting on someone else: "mdsync follow-ups" needs the user's visual check that the existing "mdsync test" note renders its table, and "joplin-dashboard global discoverability" has its wrappers and manifest committed and waits on claude-wrangler to run the `~/.claude` install. Nothing else is in flight; the inactive threads are ideas or deferred.
 
 ## Flags
 
@@ -24,32 +24,29 @@ Signals between skills, not threads: a `###` here is raised by one skill and cle
 
 #### Run `/project-prioritize`  [ ]
 
-start: 2026-06-06 11:00; update: 2026-07-28 15:58
-Items the 2026-07-28 autonomous pass deliberately did not decide. Interactive `/project-prioritize` clears this thread.
-- **Replan, do not re-rank — "Notebook-path support in dashboard YAML".** It has been the top priority since 2026-05-15 with zero commits against it in that time, and both the 2026-06-06 and 2026-06-09 session records note it as "remains open — untouched this session". Its first step is a `/framing`, so the thread is stalled at a decision, not at implementation. Consider either scheduling that framing explicitly, or descoping to exact-path-only matching that unblocks job_search without settling the fuzzy-matching question.
-- **Stale-thread review (proposals only, never auto-applied).** Untouched since 2026-05-15: "Fork enhancements" `[idea]`, "MCP packaging / distribution infrastructure" `[deferred]`, "CLAUDE.md cross-branch persistence" `[idea]`. Decide whether any should become `[superseded]`.
-- **No prioritization rubric exists.** RICE scoring this pass was uncalibrated. An interactive run can bootstrap `PRIORITIZATION_RUBRIC.md`; autonomous runs never author it.
-- **Deferred by the 2026-11-25 autonomous pass (split candidates from the blind regrouping):** (a) pull the preview/execute ID-set-hash safety check out of "Direct SQLite read layer" — it ships on the current REST path; (b) split "Survey alternatives before implementing" into survey vs build; (c) split "Candidate tool and API additions" into events API, resource write tools, and search-operator docs; (d) fold "Extend the same treatment to joplin-mdsync" into the two earlier discoverability TODOs.
-- **Stale-thread review, 2026-11-25 (proposals only):** "joplin-dashboard global discoverability", "mdsync follow-ups", "Direct SQLite read layer" and "Joppy `utcfromtimestamp` deprecation warning" unchanged since 2026-07-28; "Fork enhancements" and "MCP packaging" since 2026-11-05. "CLAUDE.md cross-branch persistence" is already `[superseded]` but still holds one open TODO — archive it once claude-wrangler confirms ownership.
+start: 2026-06-06 11:00; update: 2026-11-25 14:39
+Two restructuring proposals the 2026-11-25 interactive pass did not take up; everything else in this flag was decided that day.
+- Pull the preview/execute ID-set-hash safety check out of "Direct SQLite read layer" into its own TODO — it could ship on the current REST path.
+- Split "Fork enhancements" → "Candidate tool and API additions" into events API, resource write tools, and search-operator docs.
 
 ## 2. Active Threads
 
-### Notebook-path support in dashboard YAML  [plan] (#)
+### mdsync follow-ups  [implement]
 
-Full-path notebook matching in the dashboard loader, to unblock job_search.
-→ markdowns/status_threads/notebook-path-support-in-dashboard-yaml_THREAD.md
+Residual verification left over from the shipped mdsync subpackage (`bbacf38`). The feature itself is done, committed, and dogfooded; the completed record is archived in `markdowns/session_archive/SWEPT_20260728_1558.md`.
+→ markdowns/status_threads/mdsync-follow-ups_THREAD.md
 
 ### joplin-dashboard global discoverability  [implement]
 
 Put the joplin-dashboard and joplin-mdsync CLIs on PATH outside the conda env.
 → markdowns/status_threads/joplin-dashboard-global-discoverability_THREAD.md
 
+### Notebook-path support in dashboard YAML  [plan] (#)
+
+Full-path notebook matching in the dashboard loader, to unblock job_search.
+→ markdowns/status_threads/notebook-path-support-in-dashboard-yaml_THREAD.md
+
 ## 3. Inactive Threads
-
-### mdsync follow-ups  [queued]
-
-Residual verification left over from the shipped mdsync subpackage (`bbacf38`). The feature itself is done, committed, and dogfooded; the completed record is archived in `markdowns/session_archive/SWEPT_20260728_1558.md`.
-→ markdowns/status_threads/mdsync-follow-ups_THREAD.md
 
 ### Direct SQLite read layer  [idea]
 
@@ -61,7 +58,7 @@ Read-only SQLite layer for filtered reads, keeping REST for writes.
 Wish-list of fork-local additions; not formally scoped.
 → markdowns/status_threads/fork-enhancements_THREAD.md
 
-### MCP packaging / distribution infrastructure  [deferred]
+### MCP packaging / distribution infrastructure  [dropped]
 
 Extract the archived Docker/install tooling into a reusable mcp-docker-dev repo.
 → markdowns/status_threads/mcp-packaging-distribution-infrastructure_THREAD.md
@@ -78,13 +75,14 @@ Superseded 2026-11-06 — handed to claude-wrangler as the single owner.
 
 ## 4. Deliverables and Deadlines
 
-#### Full-path notebook matching for job_search  [blocked]
+#### Full-path notebook matching for job_search  [x]
 
-start: 2026-05-15 22:00; update: 2026-07-28 15:58
+start: 2026-05-15 22:00; update: 2026-11-25 14:39
 Cross-project commitment to job_search — full-path notebook matching in `JoplinRestLoader`.
 - Owner: this project; consumer: job_search
 - No hard date; job_search is unblocked-but-degraded on a leaf-name workaround
 - Tracked as a cross-project blocker in `~/.claude/STATUS.md`; delivered by the "Notebook-path support in dashboard YAML" thread
+- Delivered 2026-11-25 in `20d0bd6`; user-global blocker moved to Resolved. Switching job_search's config to full paths is job_search's call.
 
 ## 5. Blockers
 

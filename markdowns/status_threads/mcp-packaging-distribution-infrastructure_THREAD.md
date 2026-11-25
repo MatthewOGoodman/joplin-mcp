@@ -3,6 +3,7 @@
 Extract the archived Docker/install tooling into a reusable mcp-docker-dev repo.
 - Source: the `archive/bulk-operations-monolith` tag (`3de13d4`); target: a new `MatthewOGoodman/mcp-docker-dev` repo, not yet created, as reusable infrastructure for any MCP project.
 - Parked, not started. What the tag holds, and the reasoning, in `mcp-packaging-distribution-infrastructure_PLAN_design.md`.
+- Dropped 2026-11-25 by user decision: upstream now ships its own Docker and install tooling, and no hand-off of this work exists elsewhere. The archive tag stays as reference.
 
 ## TODO
 
