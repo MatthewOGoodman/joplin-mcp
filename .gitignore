@@ -293,3 +293,4 @@ dev_settings.py
 AGENTS.md
 CLAUDE.md
 docs/mcp-design-patterns.md 
+backups/
