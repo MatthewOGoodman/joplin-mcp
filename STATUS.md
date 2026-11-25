@@ -14,7 +14,7 @@ FastMCP-based MCP server giving AI assistants access to Joplin notes; fork of al
 
 Full-path notebook matching shipped 2026-11-25 (`20d0bd6`): a dashboard section can now name `"1-Job Search/People"`, and the job_search blocker is resolved — switching job_search's config over is job_search's call. Its thread is complete and awaits the next cleanup sweep.
 
-Two small threads are active alongside it, both waiting on someone else: "mdsync follow-ups" needs the user's visual check that the existing "mdsync test" note renders its table, and "joplin-dashboard global discoverability" has its wrappers and manifest committed and waits on claude-wrangler to run the `~/.claude` install. Nothing else is in flight; the inactive threads are ideas or deferred.
+Two small threads are active alongside it: "mdsync follow-ups" is complete (the table renders correctly), and "joplin-dashboard global discoverability" has its wrappers and manifest committed and waits on claude-wrangler to run the `~/.claude` install. Nothing else is in flight; the inactive threads are ideas or deferred.
 
 ## Flags
 
